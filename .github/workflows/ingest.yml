@@ -43,5 +43,13 @@ jobs:
         with:
           name: snapshot-${{ github.run_id }}-${{ github.run_attempt }}
           path: data/
+          # 90 days is the hard cap for public repositories (the API rejects
+          # anything higher with 409), and it is NOT enough on its own:
+          # ingestion starts at MS1 (17.09.2026) but MS4 is due 10.01.2027,
+          # 115 days later, so the earliest ~25 days would expire before the
+          # live system is graded. This data cannot be re-fetched, the feed has
+          # no history endpoint. Artifacts are therefore only a safety net; the
+          # durable store is the GCS bucket wired up in MS2, which must land
+          # before 16.12.2026 when the first snapshots start dropping off.
           retention-days: 90
           if-no-files-found: error
