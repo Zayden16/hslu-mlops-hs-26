@@ -20,7 +20,16 @@ build_pdf() {
     local doc=$1
     [[ -f "$doc.md" ]] || { echo "no such document: $doc.md" >&2; return 1; }
     echo "pdf: $doc.md -> $doc.pdf"
-    pandoc "$doc.md" -o "$doc.pdf" --template=template.tex --pdf-engine=xelatex
+    # Pin the embedded timestamp to the source's last commit, so rebuilding an
+    # unchanged document does not churn the CreationDate. The output is still
+    # not byte-identical across runs: xelatex picks a random font-subset tag
+    # (e.g. SWFAZV+LMRoman10) each time. The rendered pages are identical, so
+    # only re-commit a PDF when its Markdown actually changed.
+    local epoch
+    epoch=$(git log -1 --format=%ct -- "$doc.md" 2>/dev/null) || true
+    [[ -n ${epoch:-} ]] || epoch=$(date +%s)
+    SOURCE_DATE_EPOCH="$epoch" FORCE_SOURCE_DATE=1 \
+        pandoc "$doc.md" -o "$doc.pdf" --template=template.tex --pdf-engine=xelatex
 }
 
 for mmd in ./*.mmd; do
