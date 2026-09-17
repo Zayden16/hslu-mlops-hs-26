@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Data and artifacts (never in git)
+data/
+*.parquet
+*.csv
+*.duckdb
+models/
+artifacts/
+mlruns/
+mlartifacts/
+wandb/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
