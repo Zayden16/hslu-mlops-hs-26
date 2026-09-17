@@ -77,7 +77,8 @@ a one-line configuration change (`SKYJAM_ADSB_BASE_URL`).
 **hourly** with paced requests and exponential backoff on HTTP 429. History **starts when
 the poller starts**: there is no back-download. At ~67 cell-rows per sweep the store grows
 by roughly **1 600 cell-hours per day**, so MS3 in December will have on the order of
-100 000 labelled rows. Ingestion is already running to accumulate history ahead of MS2.
+100 000 labelled rows. The hourly job is deployed and green, so history accumulates from
+MS1 onwards.
 
 **Validated signal** (live snapshot, aircraft at or above FL200, degraded = NIC < 7):
 
