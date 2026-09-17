@@ -1,0 +1,14 @@
+.venv/
+data/
+.git/
+.github/
+ilias-dump/
+notebooks/
+tests/
+docs/
+**/__pycache__/
+*.parquet
+.env
+.pytest_cache/
+.ruff_cache/
+mlruns/
