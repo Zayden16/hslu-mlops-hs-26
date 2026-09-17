@@ -1,0 +1,47 @@
+name: ingest
+
+on:
+  schedule:
+    # Hourly, a few minutes past the hour. The feature pipeline is the only
+    # thing that creates this dataset, so a missed run is permanently lost data.
+    - cron: "7 * * * *"
+  workflow_dispatch:
+
+# Never let two ingest runs write the same slot concurrently.
+concurrency:
+  group: ingest
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install project
+        run: uv sync --locked
+
+      - name: Poll ADS-B feeds
+        env:
+          SKYJAM_USER_AGENT: ${{ vars.SKYJAM_USER_AGENT || 'skyjam/0.1 (HSLU MLOps student project)' }}
+          SKYJAM_FEATURE_STORE_URI: data/feature_store
+          SKYJAM_RAW_STORE_URI: data/raw
+        run: uv run skyjam-ingest
+
+      # Data never lives in git. Snapshots are uploaded as artifacts until the
+      # GCS bucket is wired up in MS2.
+      - name: Upload snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-${{ github.run_id }}-${{ github.run_attempt }}
+          path: data/
+          retention-days: 90
+          if-no-files-found: error
