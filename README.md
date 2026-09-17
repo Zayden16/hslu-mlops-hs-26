@@ -1,31 +1,67 @@
-# HSLU MLOps HS26 — Semester Project
+# skyjam — Forecasting GNSS Interference over European Airspace
 
 Module: **I.BA_MLOPS.H2601 · Machine Learning Operations** · Bachelor Informatik, Hochschule Luzern · Autumn Semester 2026.
 
-Goal: build a **live ML system** — an automated, cloud-deployed pipeline that ingests dynamic data, computes features, trains a model and serves predictions, following the **FTI architecture**.
+**The prediction.** For every H3 resolution-2 airspace cell (~180 km edge) over Europe and
+adjacent regions, skyjam predicts the probability that the cell will be
+**interference-affected 6 hours ahead**. A cell-hour counts as affected when at least 30 %
+of the cruise-altitude aircraft in it broadcast a degraded navigation integrity category
+(`NIC < 7`) over ADS-B — i.e. the aircraft themselves report that GNSS is not to be
+trusted. Success means beating persistence and per-cell hourly climatology on a strictly
+out-of-time split (target: PR-AUC ≥ 0.10 above persistence).
 
-> Status: project setup. Topic and data source to be fixed for MS1 (proposal due 01.10.2026).
+There is no historical download for this data: **the feature pipeline is the only source of
+history**, which is why it runs hourly from MS1 onwards.
+
+| | |
+| --- | --- |
+| Proposal (MS1) | [`docs/proposal.pdf`](docs/proposal.pdf) |
+| Live URL | _by MS4_ |
+| Video pitch | _by MS4_ |
+| Status | MS1 · feature pipeline implemented and running hourly; training and inference pipelines are MS3/MS4 |
+
+## Clone and run
+
+```bash
+git clone https://github.com/Zayden16/hslu-mlops-hs-26.git
+cd hslu-mlops-hs-26
+uv sync --locked --all-extras        # pinned via uv.lock
+uv run pytest                        # 24 unit tests
+cp .env.example .env                 # defaults work; no API key needed
+
+uv run skyjam-ingest                 # poll all 18 points once, write a snapshot
+uv run skyjam-features               # build the modelling table from the store
+uv run skyjam-backfill               # rebuild the derived layer from raw
+```
+
+Or with Docker, which is the same image CI and the scheduled job use:
+
+```bash
+docker build -t skyjam .
+docker run --rm -v "$PWD/data:/app/data" skyjam        # defaults to skyjam-ingest
+```
+
+One sweep takes about two minutes (requests are paced to respect the public API) and
+yields roughly 2 500 cruise-level observations across ~70 populated cells. Data is written
+under `data/` and is **not** committed.
+
+Rebuild the milestone PDFs (needs pandoc, xelatex, npx): `./docs/build.sh`
 
 ## FTI architecture
 
-```mermaid
-flowchart LR
-    S[Live data source<br/>API / scraping] --> F[1 Feature pipeline<br/>schedule or streaming, backfill]
-    F -->|write| FS[(Feature Store)]
-    FS -->|read| T[2 Training pipeline<br/>train, evaluate, register]
-    T -->|register| MR[(Model Registry)]
-    MR -->|load best| I[3 Inference pipeline<br/>on demand / scheduled]
-    FS -->|features at inference time| I
-    I --> UI[UI / API]
-```
+![FTI architecture](docs/architecture.png)
 
-| Pipeline | Trigger | Responsibility |
-| --- | --- | --- |
-| Feature | schedule / streaming | fetch raw live data, compute features, write to feature store, backfill |
-| Training | scheduled / manual | read features, train, evaluate, track experiments, register best model |
-| Inference | UI request / schedule | load best registered model, serve predictions |
+| Pipeline | Trigger | Responsibility | State |
+| --- | --- | --- | --- |
+| Feature | hourly GitHub Actions cron | poll 18 ADS-B discs, filter to FL200+, aggregate to H3 cell-hours, label, write; backfill from immutable raw | **running** |
+| Training | weekly + on drift | read features, chronological split, train vs. two baselines, track in MLflow, register best | MS3 |
+| Inference | hourly + on demand | load the Production model, score live cells, serve the map | MS4 |
 
-## Project requirements
+Feature semantics (thresholds, altitude floor, H3 resolution, lag set) live in
+`src/skyjam/common/schema.py` and are imported by all three pipelines, so training and
+serving cannot drift apart.
+
+## Course requirements
 
 - **Format:** individual project, public GitHub repo, kept reachable all semester.
 - **Data:** dynamic/live sources only (crypto, weather, SBB delays, …) — no static datasets.
