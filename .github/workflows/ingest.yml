@@ -2,9 +2,20 @@ name: ingest
 
 on:
   schedule:
-    # Hourly, a few minutes past the hour. The feature pipeline is the only
-    # thing that creates this dataset, so a missed run is permanently lost data.
+    # The feature pipeline is the only thing that creates this dataset, so a
+    # missed run is permanently lost data.
+    #
+    # GitHub does not honour a schedule reliably: it drops triggers under load
+    # and gives no retry. Measured over the first 11.6 h of running a single
+    # hourly cron, only 4 of ~12 expected runs fired (26 % capture, gaps of
+    # 3.3-4.9 h). Four staggered crons per hour therefore act as redundancy,
+    # not as four times the work: a run takes ~2 min, and build_features()
+    # collapses everything landing in the same hourly slot per cell, so extra
+    # runs within an hour cost nothing and any one of them saves the slot.
     - cron: "7 * * * *"
+    - cron: "22 * * * *"
+    - cron: "37 * * * *"
+    - cron: "52 * * * *"
   workflow_dispatch:
 
 # Never let two ingest runs write the same slot concurrently.
