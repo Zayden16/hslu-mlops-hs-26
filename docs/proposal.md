@@ -77,8 +77,9 @@ a one-line configuration change (`SKYJAM_ADSB_BASE_URL`).
 **hourly** with paced requests and exponential backoff on HTTP 429. History **starts when
 the poller starts**: there is no back-download. At ~67 cell-rows per sweep the store grows
 by roughly **1 600 cell-hours per day**, so MS3 in December will have on the order of
-100 000 labelled rows. The hourly job is deployed and green, so history accumulates from
-MS1 onwards.
+100 000 labelled rows. The job is deployed and green; GitHub drops scheduled triggers under
+load (measured: 26 % capture from one cron), so four staggered crons per hour provide
+redundancy and collapse into a single row per cell-hour.
 
 **Validated signal** (live snapshot, aircraft at or above FL200, degraded = NIC < 7):
 
@@ -118,11 +119,10 @@ carry no label.
 
 **Pipelines and triggers.** (1) *Feature*: hourly GitHub Actions cron polls all 18 points,
 aggregates to cell-hours and appends to the store; raw snapshots are retained immutably so
-the derived layer can be rebuilt end to end when a definition changes, which is exactly
-what `skyjam-backfill` does. (2) *Training*: weekly and on demand, reads the feature store,
-builds the supervised table, splits chronologically, trains against both baselines, logs to
-MLflow and registers the best run. (3) *Inference*: hourly and on UI request, loads the
-Production model and writes a 6-hour forecast per cell, served as a map.
+the derived layer can be rebuilt when a definition changes, which is what `skyjam-backfill`
+does. (2) *Training*: weekly and on demand, reads the store, splits chronologically, trains
+against both baselines, logs to MLflow and registers the best run. (3) *Inference*: hourly
+and on UI request, loads the Production model and writes a 6-hour forecast per cell.
 
 **Stack**, one line each:
 
@@ -148,6 +148,7 @@ and CI are implemented and green (24 unit tests, written against deliberately in
 leakage bugs). **The repository is public:** <https://github.com/Zayden16/hslu-mlops-hs-26>
 
 **Risks.** History accrues only from now on --- mitigated by starting ingestion at proposal
-time and retaining raw immutably so features can be recomputed. The public API could
-rate-limit or disappear --- pacing, backoff and the `adsb.fi` fallback. Sparse night
-traffic --- a per-cell traffic floor, with unobserved cells excluded rather than imputed.
+time and retaining raw immutably. Snapshots land as GitHub artifacts, capped at 90 days on
+a public repo, so the earliest history expires before MS4: the GCS bucket is dated MS2, not
+optional. The API could rate-limit or disappear --- pacing, backoff, `adsb.fi` fallback.
+Sparse night traffic --- a per-cell traffic floor, unobserved cells excluded not imputed.
