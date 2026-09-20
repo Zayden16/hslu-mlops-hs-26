@@ -18,8 +18,8 @@ ahead** (a binary classification per cell-hour, produced every hour).
 
 **Scope.** European and adjacent airspace, covered by 18 sampling discs of 250 NM: 11
 over regions where interference is reported, 7 over Western-European control regions.
-One hourly sweep currently yields 2 272 cruise-level observations of 1 537 distinct
-aircraft over 67 populated cells.
+One sweep currently yields ~5 200 stored observations, of which ~2 800 are at cruise
+altitude, over ~80 populated cells.
 
 **Label.** A cell-hour is affected when at least **30 %** of the cruise-altitude aircraft
 in it broadcast a degraded navigation integrity category (NIC < 7, i.e. a containment
@@ -73,13 +73,14 @@ rather than financial.
 key-less for non-commercial use. **Fallback:** `api.adsb.fi` serves the same schema and is
 a one-line configuration change (`SKYJAM_ADSB_BASE_URL`).
 
-**Update frequency and volume.** The feed is real time; the pipeline polls all 18 points
-**hourly** with paced requests and exponential backoff on HTTP 429. History **starts when
-the poller starts**: there is no back-download. At ~67 cell-rows per sweep the store grows
-by roughly **1 600 cell-hours per day**, so MS3 in December will have on the order of
-100 000 labelled rows. The job is deployed and green; GitHub drops scheduled triggers under
-load (measured: 26 % capture from one cron), so four staggered crons per hour provide
-redundancy and collapse into a single row per cell-hour.
+**Update frequency and volume.** The feed is real time; the pipeline sweeps all 18 points
+every **30 minutes** with paced requests and exponential backoff on HTTP 429. History
+**starts when the poller starts**: there is no back-download. At ~80 cell-rows per sweep
+the store grows by roughly **1 900 cell-hours per day**, so MS3 in December will have on
+the order of 100 000 labelled rows. Capture is a Go service on Railway, not a GitHub cron:
+four staggered crons achieved only **53 % hourly capture** over 74 h, because GitHub drops
+scheduled triggers under load and never retries, and here every dropped trigger is
+permanently lost data. A process with its own ticker does not drop ticks.
 
 **Validated signal** (live snapshot, aircraft at or above FL200, degraded = NIC < 7):
 
@@ -115,40 +116,49 @@ carry no label.
 
 # 4 System design
 
-![FTI architecture. Solid arrows are the core data flow; dotted arrows are the backfill and retrain triggers.](architecture.png)
+![FTI architecture. Solid arrows are the core data flow; the dotted arrow is the retrain trigger.](architecture.png)
 
-**Pipelines and triggers.** (1) *Feature*: hourly GitHub Actions cron polls all 18 points,
-aggregates to cell-hours and appends to the store; raw snapshots are retained immutably so
-the derived layer can be rebuilt when a definition changes, which is what `skyjam-backfill`
-does. (2) *Training*: weekly and on demand, reads the store, splits chronologically, trains
-against both baselines, logs to MLflow and registers the best run. (3) *Inference*: hourly
-and on UI request, loads the Production model and writes a 6-hour forecast per cell.
+**Pipelines and triggers.** (1) *Feature*: a Go service on Railway sweeps all 18 points
+every 30 minutes and writes **unfiltered** observations to PostgreSQL: raw coordinates, a
+nullable altitude, no H3 cell and no label. Thresholds are applied when *reading*, so the
+altitude floor or the H3 resolution can still be changed and the whole history rebuilt,
+rather than being frozen at capture time. (2) *Training*: weekly and on demand, reads the
+store, splits chronologically, trains against both baselines, logs to MLflow and registers
+the best run. (3) *Inference*: hourly and on UI request, loads the Production model and
+writes a 6-hour forecast per cell.
 
 **Stack**, one line each:
 
-- **Feature store** --- versioned Parquet on GCS, date-partitioned: point-in-time correct
-  and append-only; a managed store would add cost and no capability at this scale.
-- **Orchestration** --- GitHub Actions cron: the scheduler lives next to the code, and
-  since a missed hour is permanently lost data, simplicity *is* reliability.
+- **Feature store** --- PostgreSQL on Railway: durable (unlike the 90-day CI artifacts it
+  replaced), and SQL applies thresholds at read time over ~100 k rows naturally.
+- **Orchestration** --- a long-lived Go service with its own ticker, because a missed hour
+  is permanently lost and a best-effort scheduler measurably loses half of them.
 - **Tracking / registry** --- MLflow: run comparison plus a Production alias for inference
   to load, so the deployed version is always identifiable.
-- **Serving** --- Streamlit map on Google Cloud Run: scales to zero within the USD 50
-  credit, and a map is the natural view of a spatial forecast.
-- **Packaging** --- Docker + `uv.lock`: one identical image in CI, cron and Cloud Run.
+- **Serving** --- Streamlit map on Railway: same platform as the data, and a map is the
+  natural view of a spatial forecast.
+- **Packaging** --- Docker + `uv.lock` for Python, a 21 MB distroless image for Go.
 
 **Training--serving skew is prevented structurally:** the thresholds, the altitude floor,
-the H3 resolution and the lag set live in `src/skyjam/common/schema.py`, imported by all
-three pipelines, and inference reuses the feature pipeline's own aggregation function.
+the H3 resolution and the lag set live in `src/skyjam/common/schema.py` and are applied on
+read, so they cannot be baked into stored data. The capture service computes **no** label:
+duplicating that rule into a second language is precisely the skew this guards against.
+The sampling coordinates, which *are* shared with Go, have a parity test that fails the
+build if the two drift.
 
-**Optional / stretch (explicitly not core):** Terraform IaC, Airflow, a managed feature
-store, and alerting on the drift metric. Core FTI comes first.
+**Optional / stretch (not core):** Terraform IaC, Airflow, a managed feature store,
+alerting on the drift metric. Core FTI comes first.
 
-**Current state.** The feature pipeline, aggregation, leakage logic, backfill, Dockerfile
-and CI are implemented and green (24 unit tests, written against deliberately introduced
-leakage bugs). **The repository is public:** <https://github.com/Zayden16/hslu-mlops-hs-26>
+**Current state.** The capture service is deployed and green, sweeping 18/18 points per
+run; the store holds **117 000 observations across 41 hourly slots**, which the read path
+turns into a leakage-safe training table (1 012 rows, 8.7 % positive). 34 Python and 12 Go
+tests pass, the SQL ones against a real PostgreSQL rather than a mock.
+**Public repository:** <https://github.com/Zayden16/hslu-mlops-hs-26>
 
-**Risks.** History accrues only from now on --- mitigated by starting ingestion at proposal
-time and retaining raw immutably. Snapshots land as GitHub artifacts, capped at 90 days on
-a public repo, so the earliest history expires before MS4: the GCS bucket is dated MS2, not
-optional. The API could rate-limit or disappear --- pacing, backoff, `adsb.fi` fallback.
-Sparse night traffic --- a per-cell traffic floor, unobserved cells excluded not imputed.
+**Risks.** History accrues only from now on --- mitigated by ingesting from proposal time
+and storing raw unfiltered, so a definition change does not invalidate it. The original
+design would have lost its earliest data to the 90-day artifact cap on 16.12.2026, before
+MS4 is graded; PostgreSQL removes that deadline, and that history was recovered from those
+artifacts before they expired. The API could rate-limit or vanish --- pacing tuned to the
+measured limit (12 s), backoff, `adsb.fi` fallback. Sparse night traffic --- a per-cell
+traffic floor, unobserved cells excluded not imputed.
