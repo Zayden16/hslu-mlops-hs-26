@@ -1,24 +1,27 @@
-name: ingest
+name: ingest (retired)
+
+# The hourly ingest cron has been replaced by the `ingestor` service on
+# Railway (services/ingestor), which writes to PostgreSQL.
+#
+# Why it was retired rather than kept as a backup:
+#
+# 1. Capture rate. Measured over 74 h, the four staggered crons covered only
+#    39 distinct hours (53 %). GitHub drops scheduled triggers under load and
+#    offers no retry, and for this dataset a missed hour is unrecoverable
+#    because the feed has no history endpoint.
+# 2. Durability. Snapshots lived in artifacts capped at 90 days, so the
+#    earliest data would have expired on 16.12.2026, before MS4 is graded on
+#    10.01.2027.
+# 3. Correctness. Running both writers at once would double-poll a
+#    rate-limited API, and the measured limit (2-3 requests per burst,
+#    recovering after ~15 s) means the two schedules would starve each other.
+#
+# Kept as a manual-only job so the fallback path stays exercisable and the
+# history of this decision is visible in the repo.
 
 on:
-  schedule:
-    # The feature pipeline is the only thing that creates this dataset, so a
-    # missed run is permanently lost data.
-    #
-    # GitHub does not honour a schedule reliably: it drops triggers under load
-    # and gives no retry. Measured over the first 11.6 h of running a single
-    # hourly cron, only 4 of ~12 expected runs fired (26 % capture, gaps of
-    # 3.3-4.9 h). Four staggered crons per hour therefore act as redundancy,
-    # not as four times the work: a run takes ~2 min, and build_features()
-    # collapses everything landing in the same hourly slot per cell, so extra
-    # runs within an hour cost nothing and any one of them saves the slot.
-    - cron: "7 * * * *"
-    - cron: "22 * * * *"
-    - cron: "37 * * * *"
-    - cron: "52 * * * *"
   workflow_dispatch:
 
-# Never let two ingest runs write the same slot concurrently.
 concurrency:
   group: ingest
   cancel-in-progress: false
@@ -47,20 +50,10 @@ jobs:
           SKYJAM_RAW_STORE_URI: data/raw
         run: uv run skyjam-ingest
 
-      # Data never lives in git. Snapshots are uploaded as artifacts until the
-      # GCS bucket is wired up in MS2.
       - name: Upload snapshot
         uses: actions/upload-artifact@v4
         with:
           name: snapshot-${{ github.run_id }}-${{ github.run_attempt }}
           path: data/
-          # 90 days is the hard cap for public repositories (the API rejects
-          # anything higher with 409), and it is NOT enough on its own:
-          # ingestion starts at MS1 (17.09.2026) but MS4 is due 10.01.2027,
-          # 115 days later, so the earliest ~25 days would expire before the
-          # live system is graded. This data cannot be re-fetched, the feed has
-          # no history endpoint. Artifacts are therefore only a safety net; the
-          # durable store is the GCS bucket wired up in MS2, which must land
-          # before 16.12.2026 when the first snapshots start dropping off.
           retention-days: 90
           if-no-files-found: error
