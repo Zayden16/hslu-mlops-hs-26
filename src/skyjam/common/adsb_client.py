@@ -3,6 +3,12 @@
 The v2 `point` endpoint returns every aircraft currently tracked within a radius
 of a coordinate, including the self-reported navigation quality fields (`nic`,
 `nac_p`, `sil`) that this project is built on.
+
+Scheduled *capture* is not done here: it runs in the Go service under
+`services/ingestor`, which writes to PostgreSQL. This client exists for the
+inference pipeline (MS4), which needs to pull a live snapshot on demand and
+score it through `features.aggregate.snapshot_to_cells`, the same aggregation
+the stored history goes through.
 """
 
 from __future__ import annotations

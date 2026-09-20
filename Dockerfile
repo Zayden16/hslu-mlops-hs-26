@@ -26,5 +26,7 @@ RUN uv sync --locked --no-dev
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Default to one ingest run; override the command for the other pipelines.
-CMD ["skyjam-ingest"]
+# The Python image covers the read-side pipelines (features, and later
+# training and inference). Capture runs from services/ingestor, which has its
+# own much smaller Go image.
+CMD ["skyjam-features"]

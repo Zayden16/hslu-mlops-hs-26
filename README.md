@@ -11,14 +11,14 @@ trusted. Success means beating persistence and per-cell hourly climatology on a 
 out-of-time split (target: PR-AUC ≥ 0.10 above persistence).
 
 There is no historical download for this data: **the feature pipeline is the only source of
-history**, which is why it runs hourly from MS1 onwards.
+history**, which is why a Go service polls the feed continuously from MS1 onwards.
 
 | | |
 | --- | --- |
 | Proposal (MS1) | [`docs/proposal.pdf`](docs/proposal.pdf) |
 | Live URL | _by MS4_ |
 | Video pitch | _by MS4_ |
-| Status | MS1 · feature pipeline implemented and running hourly; training and inference pipelines are MS3/MS4 |
+| Status | MS1 · ingest service deployed on Railway, writing to Postgres; training and inference pipelines are MS3/MS4 |
 
 ## Clone and run
 
@@ -26,24 +26,29 @@ history**, which is why it runs hourly from MS1 onwards.
 git clone https://github.com/Zayden16/hslu-mlops-hs-26.git
 cd hslu-mlops-hs-26
 uv sync --locked --all-extras        # pinned via uv.lock
-uv run pytest                        # 24 unit tests
-cp .env.example .env                 # defaults work; no API key needed
-
-uv run skyjam-ingest                 # poll all 18 points once, write a snapshot
-uv run skyjam-features               # build the modelling table from the store
-uv run skyjam-backfill               # rebuild the derived layer from raw
+uv run pytest                        # 34 unit tests
+cp .env.example .env
 ```
 
-Or with Docker, which is the same image CI and the scheduled job use:
+Reading the feature store needs `DATABASE_URL` pointing at the Postgres instance:
 
 ```bash
-docker build -t skyjam .
-docker run --rm -v "$PWD/data:/app/data" skyjam        # defaults to skyjam-ingest
+export DATABASE_URL=postgres://...
+uv run python -c "from skyjam.common.db import *; print(slot_coverage(get_engine()).tail())"
 ```
 
-One sweep takes about two minutes (requests are paced to respect the public API) and
-yields roughly 2 500 cruise-level observations across ~70 populated cells. Data is written
-under `data/` and is **not** committed.
+The capture service is Go and lives in [`services/ingestor/`](services/ingestor):
+
+```bash
+cd services/ingestor
+go test ./...                                  # unit tests, no database needed
+DATABASE_URL=postgres://... SKYJAM_RUN_ONCE=true go run .   # one sweep
+docker build -t skyjam-ingestor .              # the image Railway deploys
+```
+
+One sweep takes about 7 minutes and yields roughly 12 000 observations across 18 discs.
+Requests are paced at 12 s because the public feed is rate-limited (see below). Data lives
+in Postgres and is **not** committed.
 
 Rebuild the milestone PDFs (needs pandoc, xelatex, npx): `./docs/build.sh`
 
@@ -53,13 +58,41 @@ Rebuild the milestone PDFs (needs pandoc, xelatex, npx): `./docs/build.sh`
 
 | Pipeline | Trigger | Responsibility | State |
 | --- | --- | --- | --- |
-| Feature | hourly GitHub Actions cron | poll 18 ADS-B discs, filter to FL200+, aggregate to H3 cell-hours, label, write; backfill from immutable raw | **running** |
+| Feature | Go service on Railway, every 30 min | poll 18 ADS-B discs, capture **unfiltered** observations to Postgres | **running** |
 | Training | weekly + on drift | read features, chronological split, train vs. two baselines, track in MLflow, register best | MS3 |
 | Inference | hourly + on demand | load the Production model, score live cells, serve the map | MS4 |
 
-Feature semantics (thresholds, altitude floor, H3 resolution, lag set) live in
-`src/skyjam/common/schema.py` and are imported by all three pipelines, so training and
-serving cannot drift apart.
+### Why a Go service instead of a GitHub Actions cron
+
+The first implementation used a scheduled workflow. Measured over 74 h, four staggered
+hourly crons captured only **39 distinct hours (53 %)**: GitHub drops scheduled triggers
+under load and never retries. For a dataset whose source has no history endpoint, every
+missed hour is gone permanently. Snapshots also lived in Actions artifacts capped at 90
+days, so the earliest data would have expired on 16.12.2026, before MS4 is graded on
+10.01.2027.
+
+A long-lived process with a wall-clock-aligned ticker does not drop ticks, and Postgres
+does not expire. The workflow is kept at `workflow_dispatch` only, as a documented
+fallback.
+
+### Capture stores raw, semantics are applied on read
+
+The Go service stores **every aircraft with a position and a NIC**: raw coordinates, a
+nullable altitude, no H3 column, no label. The altitude floor, H3 resolution, NIC
+threshold and traffic floor all live in `src/skyjam/common/schema.py` and are applied
+when reading, so training and serving cannot drift apart and a threshold can still be
+revisited against the whole history.
+
+This was a correction, not just a preference: the previous Parquet layer filtered to
+FL200+ and wrote H3 res 3 while the feature store used res 2, which made its documented
+"backfill from immutable raw" guarantee impossible to honour.
+
+### The feed is rate-limited
+
+`api.adsb.lol` limits via nginx with no `Retry-After` and no quota headers, and documents
+the limit as *dynamic based on environment load*. Measured: a burst is cut off after 2-3
+requests and recovers after ~15 s. At the original 2 s spacing only 10-12 of 18 discs
+completed per sweep; at 12 s spacing with a 16 s base backoff a sweep returns 18/18.
 
 ## Course requirements
 
@@ -98,17 +131,18 @@ Each milestone summary (max. 2 pages) contains what was achieved **and** a numbe
 ```
 ├── README.md            prediction · FTI diagram · clone-and-run steps · live URL · video link (by MS4)
 ├── docs/                proposal.pdf, ms2_summary.pdf, ms3_summary.pdf, ms4_summary.pdf, architecture.png
-├── src/<package>/
-│   ├── features/        feature pipeline (ingest, backfill, compute, write)
+├── services/ingestor/   Go capture service (Railway): ADS-B client, sampling grid, Postgres store, migrations
+├── src/skyjam/
+│   ├── common/          shared code (schema, config, db read path, grid)
+│   ├── features/        feature engineering on top of the store
 │   ├── training/        training pipeline (read features, train, evaluate, register)
-│   ├── inference/       inference pipeline (load model, predict, serve)
-│   └── common/          shared code (config, IO, feature definitions)
+│   └── inference/       inference pipeline (load model, predict, serve)
 ├── ui/                  Streamlit / Gradio front end
 ├── config/              settings without secrets
 ├── tests/               unit tests, run in CI
 ├── notebooks/           exploration only
-├── .github/workflows/   scheduled pipelines, CI, deploy
-├── Dockerfile           (+ docker-compose.yml for multiple services)
+├── .github/workflows/   CI (Python + Go against a real Postgres), retired ingest cron
+├── Dockerfile           (+ services/ingestor/Dockerfile for the Go service)
 ├── pyproject.toml + uv.lock
 ├── .env.example
 └── .gitignore
