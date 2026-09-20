@@ -38,6 +38,10 @@ def normalise_aircraft(
 
     Only aircraft with a usable position, an altitude at or above cruise, and a
     reported NIC are kept. Everything else cannot contribute to the label.
+
+    This is the *live snapshot* path, used by the inference pipeline. Stored
+    history arrives already filtered by SQL (see `common.db`) and only needs
+    `assign_cells`.
     """
     rows: list[dict[str, Any]] = []
     for ac in aircraft:
@@ -64,11 +68,32 @@ def normalise_aircraft(
     frame = pd.DataFrame(rows)
     if frame.empty:
         return frame
+    return assign_cells(frame)
+
+
+def assign_cells(
+    observations: pd.DataFrame, resolution: int = H3_RESOLUTION
+) -> pd.DataFrame:
+    """Attach the H3 cell and the hourly slot to positioned observations.
+
+    Kept separate from `normalise_aircraft` because the H3 resolution is a
+    modelling choice applied at *read* time: raw storage keeps bare
+    coordinates, so the resolution can be changed and the whole history
+    rebuilt without re-collecting data that cannot be re-collected.
+    """
+    frame = observations.copy()
+    if frame.empty:
+        return frame
+
     frame["h3_cell"] = [
-        h3.latlng_to_cell(lat, lon, H3_RESOLUTION)
+        h3.latlng_to_cell(lat, lon, resolution)
         for lat, lon in zip(frame["lat"], frame["lon"], strict=True)
     ]
-    frame["slot_start"] = frame["observed_at"].dt.floor(f"{SLOT_MINUTES}min")
+    # Recomputed rather than trusted: the writer records slot_start too, but
+    # the aggregation must not depend on the writer agreeing with schema.py.
+    frame["slot_start"] = pd.to_datetime(frame["observed_at"], utc=True).dt.floor(
+        f"{SLOT_MINUTES}min"
+    )
     return frame
 
 

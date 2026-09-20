@@ -1,0 +1,4 @@
+# Keep the build context minimal: only Go sources and migrations matter.
+.git
+*_test.go
+README.md

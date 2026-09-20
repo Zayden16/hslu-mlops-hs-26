@@ -13,6 +13,9 @@ dependencies = [
     "pydantic>=2.7.0",
     "pydantic-settings>=2.3.0",
     "tenacity>=8.3.0",
+    # The feature store is PostgreSQL on Railway, written by services/ingestor.
+    "sqlalchemy>=2.0.30",
+    "psycopg[binary]>=3.2.0",
 ]
 
 [project.optional-dependencies]
