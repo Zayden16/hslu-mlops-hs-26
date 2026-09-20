@@ -1,19 +1,18 @@
 %%{init: {"flowchart": {"nodeSpacing": 40, "rankSpacing": 50, "padding": 8, "wrappingWidth": 500}, "themeVariables": {"fontSize": "34px"}}}%%
 flowchart LR
-    A["<b>Live source</b><br/>api.adsb.lol v2<br/>18 points · hourly"]
-    P["<b>1 · Feature pipeline</b><br/><i>Actions cron, hourly</i><br/>poll · FL200+ filter<br/>H3 res-2 · label"]
-    R[("<b>Raw store</b><br/>immutable<br/>Parquet")]
-    FS[("<b>Feature store</b><br/>Parquet on GCS<br/>cell_hourly")]
+    A["<b>Live source</b><br/>api.adsb.lol v2<br/>18 points"]
+    P["<b>1 · Feature pipeline</b><br/><i>Go service, Railway</i><br/>poll · capture raw<br/>every 30 min"]
+    R[("<b>Raw store</b><br/>Postgres, unfiltered<br/>no thresholds baked in")]
+    FS[("<b>Feature store</b><br/>read-time semantics<br/>FL200+ · H3 res-2 · label")]
     T["<b>2 · Training</b><br/><i>weekly + on drift</i><br/>time split · LightGBM<br/>vs 2 baselines"]
     MR[("<b>Model registry</b><br/>MLflow<br/>versioned")]
     I["<b>3 · Inference</b><br/><i>hourly + on demand</i><br/>load Production<br/>score cells"]
-    UI["<b>Streamlit map</b><br/>Cloud Run<br/>6 h forecast"]
-    MON["<b>Monitoring</b><br/>PSI drift<br/>lagged accuracy"]
+    UI["<b>Streamlit map</b><br/>6 h forecast"]
+    MON["<b>Monitoring</b><br/>PSI drift · slot coverage<br/>lagged accuracy"]
 
     A --> P
-    P -->|"raw"| R
-    R -.->|"backfill"| P
-    P -->|write| FS
+    P -->|"capture"| R
+    R -->|"schema.py applied<br/>at read time"| FS
     FS -->|read| T
     T -->|"register best"| MR
     MR -->|"load Production"| I

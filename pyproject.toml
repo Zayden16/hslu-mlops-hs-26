@@ -35,9 +35,8 @@ dev = [
 ]
 
 [project.scripts]
-skyjam-ingest = "skyjam.features.ingest:main"
-skyjam-backfill = "skyjam.features.backfill:main"
 skyjam-features = "skyjam.features.compute:main"
+skyjam-import-legacy = "skyjam.features.import_legacy:main"
 
 [build-system]
 requires = ["hatchling"]

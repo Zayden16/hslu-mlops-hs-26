@@ -19,7 +19,6 @@ import logging
 
 import pandas as pd
 
-from skyjam.common.config import get_settings
 from skyjam.common.schema import (
     BASE_COLUMNS,
     FORECAST_HORIZON_HOURS,
@@ -27,7 +26,6 @@ from skyjam.common.schema import (
     LAG_HOURS,
     TARGET_COLUMN,
 )
-from skyjam.common.storage import read_dataset, write_partition
 
 logger = logging.getLogger(__name__)
 
@@ -113,24 +111,43 @@ def feature_columns(frame: pd.DataFrame) -> list[str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build the modelling table.")
-    parser.add_argument("--dataset", default="cell_hourly")
+    parser.add_argument(
+        "--out",
+        help="optional Parquet path to write the table to; otherwise only summarised",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
-    settings = get_settings()
-    cells = read_dataset(settings.feature_store_uri, args.dataset)
+    # Imported here so `build_features` stays importable, and unit-testable,
+    # without a database or a configured DATABASE_URL.
+    from skyjam.common.db import get_engine, read_cell_hourly
+
+    cells = read_cell_hourly(get_engine())
     if cells.empty:
-        logger.error("no observations found; run the ingest job first")
+        logger.error("no observations in the feature store; is the ingest service running?")
         return
 
     features = build_features(cells)
-    write_partition(features, settings.feature_store_uri, "training_table")
+    if features.empty:
+        logger.error(
+            "no rows survived: %d cell-slots exist but none have an observed "
+            "state %d hours later yet",
+            len(cells),
+            FORECAST_HORIZON_HOURS,
+        )
+        return
+
     logger.info(
-        "built %d rows, positive rate %.3f, base columns %s",
+        "built %d rows over %d cells, positive rate %.3f, base columns %s",
         len(features),
-        features[TARGET_COLUMN].mean() if not features.empty else 0.0,
+        features["h3_cell"].nunique(),
+        features[TARGET_COLUMN].mean(),
         list(BASE_COLUMNS),
     )
+
+    if args.out:
+        features.to_parquet(args.out, index=False)
+        logger.info("wrote %s", args.out)
 
 
 if __name__ == "__main__":
