@@ -196,11 +196,11 @@ clean, and rows whose future state was never observed carry no label.
     \node[pipe,  right=of src]  (feat) {\textbf{1 · Feature pipeline}\\\emph{Go service, Railway}\\poll + capture raw, every 30\,min};
     \node[store, right=of feat] (raw)  {\textbf{Raw store}\\PostgreSQL, unfiltered\\no thresholds baked in};
     \node[store, right=of raw]  (fs)   {\textbf{Feature store}\\read-time semantics\\FL200+ · H3 res-2 · label};
-    \node[sink,   right=of fs]   (ui)   {\textbf{Streamlit map}\\6\,h forecast per cell};
+    \node[sink,   right=of fs]   (ui)   {\textbf{Serving}\\Go API $\rightarrow$ Astro map\\6\,h forecast per cell};
     % Row 2: training, registry, inference, monitoring
-    \node[pipe,  below=1.0cm of feat] (train) {\textbf{2 · Training}\\\emph{weekly + on drift}\\time split · LightGBM vs 2 baselines};
+    \node[pipe,  below=1.0cm of feat] (train) {\textbf{2 · Training}\\\emph{Python, weekly + on drift}\\time split · LightGBM vs 2 baselines};
     \node[store, below=1.0cm of raw]  (reg)   {\textbf{Model registry}\\MLflow, versioned\\Production alias};
-    \node[pipe,  below=1.0cm of fs]   (inf)   {\textbf{3 · Inference}\\\emph{hourly + on demand}\\load Production, score cells};
+    \node[pipe,  below=1.0cm of fs]   (inf)   {\textbf{3 · Inference}\\\emph{Python batch, hourly}\\score cells, write to Postgres};
     \node[sink,   below=1.0cm of ui]   (mon)   {\textbf{Monitoring}\\PSI drift · slot coverage\\lagged accuracy};
 
     \draw[flow] (src) -- (feat);
@@ -210,7 +210,7 @@ clean, and rows whose future state was never observed carry no label.
     \draw[flow] (train) -- node[lbl,above=1pt]{register} (reg);
     \draw[flow] (reg) -- node[lbl,above=1pt]{load} (inf);
     \draw[flow] (fs) -- node[lbl]{live features} (inf);
-    \draw[flow] (inf.north east) -- (ui.south west);
+    \draw[flow] (inf.north east) -- node[lbl,sloped]{predictions} (ui.south west);
     \draw[flow] (inf) -- (mon);
     \draw[flow, dashed] (mon.south) -- ++(0,-0.5) -| node[lbl,pos=0.25]{retrain trigger} (train.south);
   \end{tikzpicture}
@@ -223,13 +223,16 @@ clean, and rows whose future state was never observed carry no label.
 discs every 30 minutes and writes \textbf{unfiltered} observations to PostgreSQL: raw
 coordinates, nullable altitude, no H3 cell and no label. Thresholds are applied at
 \emph{read} time, so the altitude floor or H3 resolution can change and the whole history be
-rebuilt. (2)~\emph{Training}: weekly and on drift; reads the store, splits chronologically,
-trains LightGBM against both baselines, logs to MLflow, registers the best run.
-(3)~\emph{Inference}: hourly and on UI request; loads the Production model and writes a
-6-hour forecast per cell.
+rebuilt. (2)~\emph{Training} (Python): weekly and on drift; reads the store, splits
+chronologically, trains LightGBM against both baselines, logs to MLflow, registers the best
+run. (3)~\emph{Inference} (Python): an hourly batch job, run after each sweep, that loads the
+Production model and writes a 6-hour forecast per cell to a PostgreSQL table. A Go API serves
+that table to an Astro frontend, so the request path never touches Python.
 
 \textbf{Tech stack}, one line of rationale each:
 \begin{itemize}
+  \item \textbf{Languages:} Go wherever a process runs continuously in production (capture,
+        serving API); Python only where the ML ecosystem is (features, LightGBM, MLflow).
   \item \textbf{Cloud and feature store:} Railway (container hosting) + PostgreSQL. Durable,
         unlike the 90-day CI artifacts it replaced, and SQL applies thresholds at read time.
   \item \textbf{Orchestration:} a long-lived Go service with a wall-clock ticker. Four
@@ -237,8 +240,9 @@ trains LightGBM against both baselines, logs to MLflow, registers the best run.
         drops scheduled triggers and never retries), and here a missed hour is lost forever.
   \item \textbf{Tracking and registry:} MLflow, for run comparison and a Production alias
         that inference loads, so the deployed version is always identifiable.
-  \item \textbf{Serving:} Streamlit map on Railway, next to the data; a map is the natural
-        view of a spatial forecast.
+  \item \textbf{Serving:} a Go JSON API plus an Astro frontend with an H3 map, both on
+        Railway; static-first pages with a map island, and a map is the natural view of a
+        spatial forecast.
   \item \textbf{Packaging and CI:} Docker, \code{uv.lock} for Python, Go modules; GitHub
         Actions runs lint and 50 tests (34 Python, 16 Go) against a real PostgreSQL.
 \end{itemize}
