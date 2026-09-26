@@ -233,6 +233,10 @@ that table to an Astro frontend, so the request path never touches Python.
 \begin{itemize}
   \item \textbf{Languages:} Go wherever a process runs continuously in production (capture,
         serving API); Python only where the ML ecosystem is (features, LightGBM, MLflow).
+        Measured on the deployed capture service: a 21\,MB distroless image against 665\,MB
+        for the Python one, 16\,MB resident memory, one static binary with no runtime to
+        patch. Its only dependency is the Postgres driver, and its concurrency and timeouts
+        come from the standard library.
   \item \textbf{Cloud and feature store:} Railway (container hosting) + PostgreSQL. Durable,
         unlike the 90-day CI artifacts it replaced, and SQL applies thresholds at read time.
   \item \textbf{Orchestration:} a long-lived Go service with a wall-clock ticker. Four
