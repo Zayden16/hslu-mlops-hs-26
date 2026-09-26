@@ -16,9 +16,30 @@ render_diagram() {
     fi
 }
 
+build_tex() {
+    # Hand-written LaTeX (the proposal): two xelatex passes for hyperref,
+    # auxiliary files kept out of docs/.
+    local doc=$1 aux
+    aux=$(mktemp -d)
+    echo "pdf: $doc.tex -> $doc.pdf"
+    local epoch
+    epoch=$(git log -1 --format=%ct -- "$doc.tex" 2>/dev/null) || true
+    [[ -n ${epoch:-} ]] || epoch=$(date +%s)
+    for _ in 1 2; do
+        SOURCE_DATE_EPOCH="$epoch" FORCE_SOURCE_DATE=1 \
+            xelatex -interaction=nonstopmode -halt-on-error \
+            -output-directory="$aux" "$doc.tex" >/dev/null \
+            || { grep -A5 '^!' "$aux/$doc.log" >&2; return 1; }
+    done
+    mv "$aux/$doc.pdf" "$doc.pdf"
+    rm -rf "$aux"
+}
+
 build_pdf() {
     local doc=$1
-    [[ -f "$doc.md" ]] || { echo "no such document: $doc.md" >&2; return 1; }
+    # template.tex is the pandoc template, not a document
+    if [[ -f "$doc.tex" && $doc != template ]]; then build_tex "$doc"; return; fi
+    [[ -f "$doc.md" ]] || { echo "no such document: $doc.md or $doc.tex" >&2; return 1; }
     echo "pdf: $doc.md -> $doc.pdf"
     # Pin the embedded timestamp to the source's last commit, so rebuilding an
     # unchanged document does not churn the CreationDate. The output is still
@@ -39,7 +60,11 @@ done
 if [[ $# -gt 0 ]]; then
     for doc in "$@"; do build_pdf "${doc%.md}"; done
 else
-    for md in ./*.md; do build_pdf "$(basename "${md%.md}")"; done
+    for src in ./*.md ./*.tex; do
+        [[ -e $src ]] || continue
+        name=$(basename "${src%.*}")
+        [[ $name == template ]] || build_pdf "$name"
+    done
 fi
 
 for pdf in ./*.pdf; do
