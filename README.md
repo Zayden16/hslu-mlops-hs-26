@@ -60,7 +60,12 @@ Rebuild the milestone PDFs (needs pandoc, xelatex, npx): `./docs/build.sh`
 | --- | --- | --- | --- |
 | Feature | Go service on Railway, every 30 min | poll 18 ADS-B discs, capture **unfiltered** observations to Postgres | **running** |
 | Training | weekly + on drift | read features, chronological split, train vs. two baselines, track in MLflow, register best | MS3 |
-| Inference | hourly + on demand | load the Production model, score live cells, serve the map | MS4 |
+| Inference | hourly batch (Python) | load the Production model, score live cells, write forecasts to Postgres | MS4 |
+| Serving | always on (Go + Astro) | Go JSON API over the forecast table, Astro map frontend | MS4 |
+
+**Language split:** Go wherever a process runs continuously in production (capture,
+serving API), Python only where the ML ecosystem is (features, LightGBM training,
+MLflow, batch inference). The request path never touches Python.
 
 ### Why a Go service instead of a GitHub Actions cron
 
@@ -137,7 +142,7 @@ Each milestone summary (max. 2 pages) contains what was achieved **and** a numbe
 │   ├── features/        feature engineering on top of the store
 │   ├── training/        training pipeline (read features, train, evaluate, register)
 │   └── inference/       inference pipeline (load model, predict, serve)
-├── ui/                  Streamlit / Gradio front end
+├── ui/                  Astro frontend (map of the 6 h forecast), fed by the Go API
 ├── config/              settings without secrets
 ├── tests/               unit tests, run in CI
 ├── notebooks/           exploration only

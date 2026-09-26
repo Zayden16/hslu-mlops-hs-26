@@ -6,8 +6,8 @@ flowchart LR
     FS[("<b>Feature store</b><br/>read-time semantics<br/>FL200+ · H3 res-2 · label")]
     T["<b>2 · Training</b><br/><i>weekly + on drift</i><br/>time split · LightGBM<br/>vs 2 baselines"]
     MR[("<b>Model registry</b><br/>MLflow<br/>versioned")]
-    I["<b>3 · Inference</b><br/><i>hourly + on demand</i><br/>load Production<br/>score cells"]
-    UI["<b>Streamlit map</b><br/>6 h forecast"]
+    I["<b>3 · Inference</b><br/><i>Python batch, hourly</i><br/>load Production<br/>write forecasts"]
+    UI["<b>Go API + Astro map</b><br/>6 h forecast"]
     MON["<b>Monitoring</b><br/>PSI drift · slot coverage<br/>lagged accuracy"]
 
     A --> P
