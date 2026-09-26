@@ -26,7 +26,7 @@ history**, which is why a Go service polls the feed continuously from MS1 onward
 git clone https://github.com/Zayden16/hslu-mlops-hs-26.git
 cd hslu-mlops-hs-26
 uv sync --locked --all-extras        # pinned via uv.lock
-uv run pytest                        # 34 unit tests
+uv run pytest                        # 34 unit tests (7 need TEST_DATABASE_URL, else skipped)
 cp .env.example .env
 ```
 
@@ -72,8 +72,8 @@ days, so the earliest data would have expired on 16.12.2026, before MS4 is grade
 10.01.2027.
 
 A long-lived process with a wall-clock-aligned ticker does not drop ticks, and Postgres
-does not expire. The workflow is kept at `workflow_dispatch` only, as a documented
-fallback.
+does not expire. The ingest workflow was therefore removed (`b259324`); the Railway
+service is the only capture path.
 
 ### Capture stores raw, semantics are applied on read
 
@@ -141,7 +141,7 @@ Each milestone summary (max. 2 pages) contains what was achieved **and** a numbe
 ├── config/              settings without secrets
 ├── tests/               unit tests, run in CI
 ├── notebooks/           exploration only
-├── .github/workflows/   CI (Python + Go against a real Postgres), retired ingest cron
+├── .github/workflows/   CI (Python + Go against a real Postgres)
 ├── Dockerfile           (+ services/ingestor/Dockerfile for the Go service)
 ├── pyproject.toml + uv.lock
 ├── .env.example
