@@ -30,3 +30,6 @@ wandb/
 .DS_Store
 .idea/
 .vscode/
+
+# Course material dump (not redistributable)
+ilias-dump/
