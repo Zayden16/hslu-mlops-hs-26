@@ -35,7 +35,7 @@ default gap between discs and a 16 s base retry backoff. At 2 s spacing only
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `DATABASE_URL` | required | injected by Railway when linked to Postgres |
-| `SKYJAM_INGEST_INTERVAL` | `30m` | gap between sweeps, aligned to the wall clock |
+| `SKYJAM_INGEST_INTERVAL` | `60m` | gap between sweeps, aligned to the wall clock. Do not go below 60m: the feed allows 500 requests/day and a sweep is 18 |
 | `SKYJAM_INTER_REQUEST_DELAY` | `12s` | gap between discs, tuned to the rate limit |
 | `SKYJAM_REQUEST_TIMEOUT` | `30s` | per-request timeout |
 | `SKYJAM_MAX_RETRIES` | `4` | attempts per disc |

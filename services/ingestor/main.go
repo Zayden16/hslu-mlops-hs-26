@@ -60,10 +60,11 @@ func loadConfig() (config, error) {
 	}
 
 	var err error
-	// Sweeps are cheap (~2 min) and the label is hourly, so polling more often
-	// than hourly costs little and buys redundancy against a restart landing
-	// badly. Several sweeps in one hour collapse during aggregation.
-	if c.Interval, err = envDuration("SKYJAM_INGEST_INTERVAL", 30*time.Minute); err != nil {
+	// The feed enforces 500 requests per day per IP (x-ratelimit-limit:
+	// 500;w=86400). One sweep is 18 requests, so 30-minute sweeps (864/day)
+	// exhausted the quota every afternoon and lost ~10 hours a day until the
+	// UTC reset. Hourly sweeps use 432/day and leave headroom for retries.
+	if c.Interval, err = envDuration("SKYJAM_INGEST_INTERVAL", 60*time.Minute); err != nil {
 		return c, err
 	}
 	if c.InterDelay, err = envDuration("SKYJAM_INTER_REQUEST_DELAY", 12*time.Second); err != nil {
