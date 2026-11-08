@@ -27,7 +27,7 @@ history**, which is why a Go service polls the feed continuously from MS1 onward
 git clone https://github.com/Zayden16/hslu-mlops-hs-26.git
 cd hslu-mlops-hs-26
 uv sync --locked --all-extras        # pinned via uv.lock
-uv run pytest                        # 43 tests (8 need TEST_DATABASE_URL, else skipped)
+uv run pytest                        # 48 tests (8 need TEST_DATABASE_URL, else skipped)
 cp .env.example .env
 ```
 
@@ -48,6 +48,17 @@ docker build -t skyjam-features . && docker run -e DATABASE_URL skyjam-features
 ```
 
 Training reads the table with `skyjam.common.db.read_features(engine)`.
+
+Deploying (Railway CLI). Each service must be uploaded from its own root, otherwise
+the root `railway.json` (Python image, cron) is applied to the Go service:
+
+```bash
+railway up --service features --detach                                   # repo root: Python image
+railway up services/ingestor --path-as-root --service ingestor --detach  # Go image
+```
+
+The `features` cron (`20 * * * *`, start command `skyjam-features`, restart `NEVER`)
+is set in the Railway environment config, mirrored in `railway.json` for reference.
 
 The capture service is Go and lives in [`services/ingestor/`](services/ingestor):
 

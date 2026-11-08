@@ -59,13 +59,15 @@ The 18 \emph{sampling discs} are the circles (about 250\,NM radius) the API is q
 
 \begin{itemize}
 \item \textbf{The feature pipeline now runs on its own.} A second Railway service,
-  \code{features}, runs at minute 20 of every hour (\code{railway.json}, cron
-  \code{20 * * * *}), 20 minutes after the Go ingestor's sweep. It reads raw
+  \code{features}, runs at minute 20 of every hour (cron \code{20 * * * *}), 20 minutes
+  after the Go ingestor's sweep. It reads raw
   \code{observations}, builds cell-hours, lags, rolling means, neighbour features and
   the 6\,h target, and swaps the result into the Postgres table
   \code{cell\_hourly\_features}. Every run writes one row to \code{feature\_runs} with
-  row count, slot range, positive rate and \code{feature\_version}. In MS1 only capture was
-  automated. Features were computed by hand.
+  row count, slot range, positive rate and \code{feature\_version}. A quality gate
+  (\code{validate\_features}: unique keys, shares in [0,1], traffic floor, plausible
+  positive rate) runs first. A failing build exits non-zero and the old table stays. In
+  MS1 only capture was automated. Features were computed by hand.
 \item \textbf{Backfill is a full rebuild.} The feed has no history endpoint, so a lost
   hour cannot be downloaded again. Instead, raw observations are stored unfiltered, and
   each run recomputes \emph{all} history (3.3\,M cruise rows to 54\,686 labelled rows,
@@ -75,16 +77,19 @@ The 18 \emph{sampling discs} are the circles (about 250\,NM radius) the API is q
   state of the 6 adjacent cells, their lags, and a 3\,h change of the neighbour share.
 \item \textbf{Leakage tests on the real path (B2)}:
   \code{tests/test\_pipeline\_leakage.py} starts from raw aircraft rows and runs the
-  production functions. 43 tests in total, also against a real Postgres in CI.
+  production functions. 48 Python and 17 Go tests, run against a real Postgres in CI.
 \item \textbf{What it cost me.} In October the ingestor lost 78 hours, nearly every
   afternoon. adsb.lol has a quota of 500 requests per day and 30-minute sweeps used 864.
   Sweeps are now hourly (\code{168b31a}, analysis in
-  \code{docs/ingestion-gaps-2026-10.md}). Completeness since 17.09: \textbf{1\,138 of
+  \code{docs/ingestion-gaps-2026-10.md}). Those failed sweeps also stayed
+  \code{running} forever, because the status write reused the expired deadline. Fixed with a
+  regression test, and migration \code{002} closed the 112 stuck rows. Completeness since 17.09: \textbf{1\,138 of
   1\,254 hours (90.7\,\%)}, November so far 181/181. I was also ill for most of the
   final week, so model training has not started.
 \item \textbf{Look first at:} \code{src/skyjam/features/compute.py},
   \code{tests/test\_pipeline\_leakage.py}, \code{write\_features} in
-  \code{src/skyjam/common/db.py}, \code{railway.json}, and the README pipeline table.
+  \code{src/skyjam/common/db.py}, and the README sections \emph{FTI architecture} and
+  \emph{Feature store} (column dictionary).
 \end{itemize}
 
 \section{Response to MS1 reviews}
