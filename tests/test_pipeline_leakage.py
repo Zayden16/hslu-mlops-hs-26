@@ -140,3 +140,42 @@ class TestNeighbours:
         b = row_at(self.build(lambda h: 2 if h <= t else 9), t)
         cols = [c for c in a.index if c.startswith("nbr_")]
         pd.testing.assert_series_equal(a[cols], b[cols], check_names=False)
+
+
+class TestValidationGate:
+    def test_clean_pipeline_output_passes(self):
+        from skyjam.features.compute import validate_features
+
+        features = pipeline(share_series(pattern=lambda h: 6 if h % 7 == 0 else 0))
+        assert validate_features(features) == []
+
+    def test_duplicate_keys_are_rejected(self):
+        from skyjam.features.compute import validate_features
+
+        features = pipeline(share_series(pattern=lambda h: 6 if h % 7 == 0 else 0))
+        doubled = pd.concat([features, features.iloc[:1]], ignore_index=True)
+        assert any("duplicate" in p for p in validate_features(doubled))
+
+    def test_out_of_range_share_is_rejected(self):
+        from skyjam.features.compute import validate_features
+
+        features = pipeline(share_series(pattern=lambda h: 6 if h % 7 == 0 else 0))
+        features.loc[0, "degraded_share_lag_1h"] = 1.5
+        assert any("outside [0, 1]" in p for p in validate_features(features))
+
+    def test_degenerate_label_is_rejected(self):
+        from skyjam.features.compute import validate_features
+
+        features = pipeline(share_series(pattern=lambda h: 0))
+        assert any("positive rate" in p for p in validate_features(features))
+
+
+def test_lineage_columns_from_the_store_are_not_model_inputs():
+    from skyjam.features.compute import feature_columns
+
+    features = pipeline(share_series())
+    features["feature_version"] = "v"
+    features["feature_run_id"] = "r"
+    cols = feature_columns(features)
+    assert "feature_version" not in cols and "feature_run_id" not in cols
+    assert TARGET_COLUMN not in cols

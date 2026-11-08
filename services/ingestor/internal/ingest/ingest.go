@@ -37,6 +37,10 @@ type Result struct {
 	FirstError error
 }
 
+// bookkeepingTimeout bounds the final insert and run-status write, which run
+// on a context detached from the (possibly expired) sweep deadline.
+const bookkeepingTimeout = 2 * time.Minute
+
 // SlotStart floors a timestamp to its hourly slot, matching the Python
 // `dt.floor("60min")` used by the aggregation.
 func SlotStart(t time.Time) time.Time {
@@ -126,10 +130,17 @@ func (in *Ingestor) RunOnce(ctx context.Context) (Result, error) {
 			"point", p.Name, "aircraft", len(snap.Aircraft), "usable", kept)
 	}
 
-	written, err := in.Store.InsertObservations(ctx, observations)
+	// Bookkeeping must survive an expired sweep deadline: in October 2026 the
+	// sweep context timed out under rate limiting, so the completion upsert
+	// failed too and ~110 runs stayed "running" forever. The final writes get
+	// their own short deadline, detached from the sweep's.
+	bookCtx, cancelBook := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
+	defer cancelBook()
+
+	written, err := in.Store.InsertObservations(bookCtx, observations)
 	if err != nil {
 		finished := time.Now().UTC()
-		_ = in.Store.UpsertRun(ctx, store.RunRecord{
+		_ = in.Store.UpsertRun(bookCtx, store.RunRecord{
 			RunID:           runID,
 			StartedAt:       started,
 			FinishedAt:      &finished,
@@ -157,7 +168,7 @@ func (in *Ingestor) RunOnce(ctx context.Context) (Result, error) {
 	}
 
 	finished := time.Now().UTC()
-	if err := in.Store.UpsertRun(ctx, store.RunRecord{
+	if err := in.Store.UpsertRun(bookCtx, store.RunRecord{
 		RunID:           runID,
 		StartedAt:       started,
 		FinishedAt:      &finished,

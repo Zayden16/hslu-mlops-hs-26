@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 
 import h3
 import pandas as pd
@@ -25,6 +26,7 @@ from skyjam.common.schema import (
     FORECAST_HORIZON_HOURS,
     LABEL_COLUMN,
     LAG_HOURS,
+    MIN_AIRCRAFT_PER_CELL,
     TARGET_COLUMN,
 )
 
@@ -155,8 +157,37 @@ def build_features(cells: pd.DataFrame) -> pd.DataFrame:
 
 def feature_columns(frame: pd.DataFrame) -> list[str]:
     """Columns the model may consume. Excludes keys and anything future-derived."""
-    forbidden = {TARGET_COLUMN, "h3_cell", "slot_start"}
+    # Lineage columns are added by the feature store on write; they identify
+    # the build, carry no signal, and would leak the build time into a model.
+    forbidden = {TARGET_COLUMN, "h3_cell", "slot_start", "feature_version", "feature_run_id"}
     return [c for c in frame.columns if c not in forbidden]
+
+
+def validate_features(features: pd.DataFrame) -> list[str]:
+    """Data-quality gate run before the feature store is overwritten.
+
+    Returns a list of human-readable problems; empty means the table is safe
+    to publish. Each check guards a failure mode that would otherwise reach
+    training silently.
+    """
+    problems: list[str] = []
+    if features.duplicated(["h3_cell", "slot_start"]).any():
+        problems.append("duplicate (h3_cell, slot_start) keys")
+    if not set(features[TARGET_COLUMN].unique()) <= {0, 1}:
+        problems.append("target is not binary")
+    share_cols = [c for c in features.columns if "degraded_share" in c and "delta" not in c]
+    for col in share_cols:
+        s = features[col].dropna()
+        if len(s) and (s.min() < 0 or s.max() > 1):
+            problems.append(f"{col} outside [0, 1]")
+    if features["degraded_share"].isna().any():
+        problems.append("current-slot degraded_share missing on a training row")
+    if (features["aircraft_count"] < MIN_AIRCRAFT_PER_CELL).any():
+        problems.append("row below the traffic floor")
+    rate = features[TARGET_COLUMN].mean()
+    if not 0.005 <= rate <= 0.5:
+        problems.append(f"positive rate {rate:.3f} outside the plausible 0.5-50% band")
+    return problems
 
 
 def main() -> None:
@@ -183,7 +214,7 @@ def main() -> None:
     cells = read_cell_hourly(engine)
     if cells.empty:
         logger.error("no observations in the feature store; is the ingest service running?")
-        return
+        sys.exit(1)
 
     features = build_features(cells)
     if features.empty:
@@ -193,7 +224,15 @@ def main() -> None:
             len(cells),
             FORECAST_HORIZON_HOURS,
         )
-        return
+        sys.exit(1)
+
+    problems = validate_features(features)
+    if problems:
+        # Fail the cron run (non-zero exit shows as failed on Railway) and keep
+        # the previous table: a bad build must never replace a good one.
+        for p in problems:
+            logger.error("validation failed: %s", p)
+        sys.exit(1)
 
     logger.info(
         "built %d rows over %d cells, positive rate %.3f, base columns %s",

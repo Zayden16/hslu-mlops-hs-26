@@ -121,6 +121,29 @@ On top of that there is a **500 requests/day** per-IP quota: 30-minute sweeps (8
 requests/day) exhausted it every afternoon in October, so sweeps are now hourly
 (see [`docs/ingestion-gaps-2026-10.md`](docs/ingestion-gaps-2026-10.md)).
 
+### Feature store: `cell_hourly_features`
+
+One row per (H3 res-2 cell, UTC hour) that was observed with at least 5 cruise aircraft
+and whose state 6 h later was also observed. Rebuilt every hour from raw by
+`skyjam-features`; every build is logged in `feature_runs` (`run_id`, `feature_version`,
+slot range, row count, positive rate).
+
+| Group | Columns | Definition (all computed from slots ≤ t) |
+| --- | --- | --- |
+| Keys | `h3_cell`, `slot_start` | cell id, start of the UTC hour |
+| Current state | `aircraft_count`, `degraded_share`, `median_nic`, `p25_nic`, `mean_nac_p`, `is_degraded` | each aircraft counted once per hour at its worst NIC; `is_degraded` = share ≥ 0.30 |
+| Own lags | `degraded_share_lag_{1,2,3,6,12,24,168}h`, `is_degraded_lag_…` | value exactly *k* hours earlier on a gap-free grid; NaN if that hour was not observed |
+| Rolling | `degraded_share_mean_{6,24}h`, `aircraft_count_mean_24h` | mean over the previous window, **excluding** hour t |
+| Neighbours | `nbr_observed`, `nbr_degraded_share_{mean,max}`, `nbr_degraded_count`, `nbr_degraded_share_mean_lag_{1,3,6}h`, `nbr_degraded_share_delta_3h` | the 6 adjacent cells in the same hour; unobserved neighbours are ignored, never counted as clean |
+| Calendar | `hour_utc`, `day_of_week` | from `slot_start` |
+| Target | `target_is_degraded` | `is_degraded` of the same cell at t + 6 h. Not a feature |
+| Lineage | `feature_version`, `feature_run_id` | which code and which build produced the row |
+
+**Quality gate.** Before the table is replaced, `validate_features` checks unique keys,
+binary target, every share within [0, 1], no row below the traffic floor, and a plausible
+positive rate. A failing build exits non-zero (shown as a failed cron run on Railway)
+and the previous table stays in place.
+
 ## Course requirements
 
 - **Format:** individual project, public GitHub repo, kept reachable all semester.
