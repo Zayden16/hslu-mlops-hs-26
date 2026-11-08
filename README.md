@@ -90,7 +90,7 @@ days, so the earliest data would have expired on 16.12.2026, before MS4 is grade
 10.01.2027.
 
 A long-lived process with a wall-clock-aligned ticker does not drop ticks, and Postgres
-does not expire. The ingest workflow was therefore removed (`b259324`); the Railway
+does not expire. The ingest workflow was therefore removed (`746aba3`); the Railway
 service is the only capture path.
 
 ### Capture stores raw, semantics are applied on read

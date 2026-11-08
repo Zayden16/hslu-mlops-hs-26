@@ -78,7 +78,7 @@ The 18 \emph{sampling discs} are the circles (about 250\,NM radius) the API is q
   production functions. 43 tests in total, also against a real Postgres in CI.
 \item \textbf{What it cost me.} In October the ingestor lost 78 hours, nearly every
   afternoon. adsb.lol has a quota of 500 requests per day and 30-minute sweeps used 864.
-  Sweeps are now hourly (\code{0a5107d}, analysis in
+  Sweeps are now hourly (\code{168b31a}, analysis in
   \code{docs/ingestion-gaps-2026-10.md}). Completeness since 17.09: \textbf{1\,138 of
   1\,254 hours (90.7\,\%)}, November so far 181/181. I was also ill for most of the
   final week, so model training has not started.
@@ -90,7 +90,7 @@ The 18 \emph{sampling discs} are the circles (about 250\,NM radius) the API is q
 \section{Response to MS1 reviews}
 
 \textbf{E1 / A3 · Beat persistence where it matters, neighbour features.}
-\st{Partly} Neighbour features are built and tested (\code{13a0b64}). The evaluation on
+\st{Partly} Neighbour features are built and tested (\code{adacf4e}). The evaluation on
 transitions is set up and will be reported in MS3. What the data already shows: 7.7\,\%
 of rows are transitions (4\,188, of which 1\,974 onsets). Persistence has PR-AUC 0.39
 overall but, by definition, \emph{zero} recall on transitions. Among currently clean
@@ -101,7 +101,7 @@ MS3 will report PR-AUC and recall overall and on transitions only, against both 
 
 \textbf{E2 · Remove \code{ilias-dump/} from the public repo.} \st{Changed} The folder
 is removed from the full git history with \code{git filter-repo} and the repository was
-force-pushed. It is in \code{.gitignore} (\code{bd1ae5b}) and \code{.dockerignore}.
+force-pushed. It is in \code{.gitignore} (\code{4c0ffff}) and \code{.dockerignore}.
 
 \textbf{A1 · Rerouting and the five-aircraft floor may hide jammed cells.}
 \st{Partly} Measured on all 103\,804 cell-hours: 30.2\,\% fall below 5 aircraft. The drop
