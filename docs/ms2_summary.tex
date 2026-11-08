@@ -1,0 +1,148 @@
+\documentclass[10pt,a4paper]{article}
+
+\usepackage{fontspec}
+\setmainfont{lmroman10-regular.otf}[
+  BoldFont       = lmroman10-bold.otf,
+  ItalicFont     = lmroman10-italic.otf,
+  BoldItalicFont = lmroman10-bolditalic.otf]
+\setmonofont{lmmono10-regular.otf}[Scale=MatchLowercase]
+
+\usepackage[a4paper,margin=1.5cm,headsep=4mm]{geometry}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{hslu}{HTML}{1F4E79}
+\titleformat{\section}{\normalfont\large\bfseries\color{hslu}}{\thesection}{0.6em}{}
+\titlespacing*{\section}{0pt}{1.0ex plus .2ex}{0.45ex}
+\titleformat{\subsection}{\normalfont\normalsize\bfseries\color{hslu}}{}{0pt}{}
+\titlespacing*{\subsection}{0pt}{0.7ex plus .2ex}{0.3ex}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.4ex plus 0.2ex minus 0.1ex}
+\setlength{\tabcolsep}{4pt}
+\setlist{nosep,leftmargin=1.2em,topsep=0.25ex}
+
+\pagestyle{fancy}\fancyhf{}
+\renewcommand{\headrulewidth}{0.4pt}
+\fancyhead[L]{\footnotesize\color{hslu}\textbf{skyjam} · MS2 Summary}
+\fancyhead[R]{\footnotesize\color{hslu}MLOps HS26 · I.BA\_MLOPS.H2601}
+\fancyfoot[C]{\footnotesize Page \thepage\ / 2}
+
+\newcommand{\repo}{https://github.com/Zayden16/hslu-mlops-hs-26}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\st}[1]{\textbf{[#1]}}
+
+\begin{document}
+
+{\color{hslu}\Large\bfseries MS2 Summary: skyjam, Forecasting GNSS Interference over European Airspace\par}
+\vspace{0.35ex}
+{\small Yazdan Musa (\href{https://github.com/Zayden16}{github.com/Zayden16}) · MLOps HS26 · MS2 Feature Pipeline · \url{\repo}\par}
+\vspace{0.4ex}
+{\color{hslu}\hrule height 1pt}
+\vspace{0.3ex}
+
+\textbf{Primer (B1).} Aircraft broadcast their position over \emph{ADS-B} together with a
+\emph{NIC} value (0--11) saying how much they trust their own GPS fix. NIC below 7 means
+the fix is worse than 0.2\,NM (370\,m), which is what jamming does. We only use aircraft
+above \emph{FL200} (20\,000\,ft), because small low aircraft report bad NIC everywhere. The
+map is cut into H3 hexagons of about 180\,km edge. One \emph{cell-hour} is one hexagon in
+one UTC hour, e.g. ``cell over the Gulf of Finland, 14:00: 23 aircraft, 14 with NIC $<$ 7,
+share 0.61, so \emph{degraded}''. The task: is that cell degraded 6 hours later?
+The 18 \emph{sampling discs} are the circles (about 250\,NM radius) the API is queried with.
+
+\section{What I achieved in this milestone}
+
+\begin{itemize}
+\item \textbf{The feature pipeline now runs on its own.} A second Railway service,
+  \code{features}, runs at minute 20 of every hour (\code{railway.json}, cron
+  \code{20 * * * *}), 20 minutes after the Go ingestor's sweep. It reads raw
+  \code{observations}, builds cell-hours, lags, rolling means, neighbour features and
+  the 6\,h target, and swaps the result into the Postgres table
+  \code{cell\_hourly\_features}. Every run writes one row to \code{feature\_runs} with
+  row count, slot range, positive rate and \code{feature\_version}. In MS1 only capture was
+  automated. Features were computed by hand.
+\item \textbf{Backfill is a full rebuild.} The feed has no history endpoint, so a lost
+  hour cannot be downloaded again. Instead, raw observations are stored unfiltered, and
+  each run recomputes \emph{all} history (3.3\,M cruise rows to 54\,686 labelled rows,
+  about 40\,s). A new feature or threshold therefore applies to the whole dataset at once.
+  I chose this over incremental updates because it is simpler and cannot go stale.
+\item \textbf{Neighbour-cell features (E1)} in \code{features/compute.py}: share and
+  state of the 6 adjacent cells, their lags, and a 3\,h change of the neighbour share.
+\item \textbf{Leakage tests on the real path (B2)}:
+  \code{tests/test\_pipeline\_leakage.py} starts from raw aircraft rows and runs the
+  production functions. 43 tests in total, also against a real Postgres in CI.
+\item \textbf{What it cost me.} In October the ingestor lost 78 hours, nearly every
+  afternoon. adsb.lol has a quota of 500 requests per day and 30-minute sweeps used 864.
+  Sweeps are now hourly (\code{0a5107d}, analysis in
+  \code{docs/ingestion-gaps-2026-10.md}). Completeness since 17.09: \textbf{1\,138 of
+  1\,254 hours (90.7\,\%)}, November so far 181/181. I was also ill for most of the
+  final week, so model training has not started.
+\item \textbf{Look first at:} \code{src/skyjam/features/compute.py},
+  \code{tests/test\_pipeline\_leakage.py}, \code{write\_features} in
+  \code{src/skyjam/common/db.py}, \code{railway.json}, and the README pipeline table.
+\end{itemize}
+
+\section{Response to MS1 reviews}
+
+\textbf{E1 / A3 · Beat persistence where it matters, neighbour features.}
+\st{Partly} Neighbour features are built and tested (\code{13a0b64}). The evaluation on
+transitions is set up and will be reported in MS3. What the data already shows: 7.7\,\%
+of rows are transitions (4\,188, of which 1\,974 onsets). Persistence has PR-AUC 0.39
+overall but, by definition, \emph{zero} recall on transitions. Among currently clean
+cells, the onset rate is 4.0\,\%, but 18.8\,\% if at least one neighbour is degraded. As a
+single score for onsets, the maximum neighbour share reaches average precision 0.22 against
+0.19 for the cell's own share (base rate 0.04). So the reviewer's point holds in the data.
+MS3 will report PR-AUC and recall overall and on transitions only, against both baselines.
+
+\textbf{E2 · Remove \code{ilias-dump/} from the public repo.} \st{Changed} The folder
+is removed from the full git history with \code{git filter-repo} and the repository was
+force-pushed. It is in \code{.gitignore} (\code{bd1ae5b}) and \code{.dockerignore}.
+
+\textbf{A1 · Rerouting and the five-aircraft floor may hide jammed cells.}
+\st{Partly} Measured on all 103\,804 cell-hours: 30.2\,\% fall below 5 aircraft. The drop
+rate differs a lot by disc: 6\,\% over Switzerland, 61\,\% over the Gulf of Finland,
+73\,\% over the Caucasus, 99\,\% over northern Finland. Across discs it correlates with the
+degraded rate (r = 0.43), and dropped cell-hours have a degraded share $\geq$ 30\,\% twice
+as often (22\,\% vs 10\,\%). The risk is therefore real. Per cell the link is weak
+(Spearman 0.09), so it is mostly regional. The floor stays, because one bad airframe would
+otherwise make a 100\,\% outage. The neighbour features partly recover the signal, since
+a jammed area usually still has some cells above the floor. For MS3 I will add the count
+of thin neighbour cells as a feature and report the metrics per region.
+
+\textbf{B2 · Leakage tests on the real pipeline.} \st{Changed}
+\code{tests/test\_pipeline\_leakage.py} builds a small known example from raw rows through
+\code{assign\_cells} $\rightarrow$ \code{aggregate\_cells} $\rightarrow$
+\code{build\_features} and checks: a 1\,h lag after a missing hour is empty (not the value
+from 2\,h before), the 6\,h rolling mean excludes the current hour, changing every hour
+after $T$ leaves all features at $T$ identical, the target is the state at $T+6$, thin
+cells are dropped, not treated as clean, and the same three checks for neighbour features.
+
+\textbf{E3 · Where MLflow runs.} \st{Not yet} Decided, not deployed: an MLflow server as a
+third Railway service, backend store in the existing Postgres (separate \code{mlflow}
+database), artifacts on a Railway volume mounted at \code{/mlflow}. Inference loads
+\code{models:/skyjam@production} from that server. This is part of MS3.
+
+\textbf{E4 · Data volume for MS3.} \st{Changed} My MS1 estimate was too high. Actual: 54\,686
+labelled cell-hours over 51 days (about 1\,050 per day, not 1\,900, because of the October
+gaps and the traffic floor), 95 cells, 9.2\,\% positives. With a 70/15/15 chronological
+split the test set (29.10--08.11) has 8\,203 rows, 512 positives and 304 onsets. Requiring
+a full week of history for the 168\,h lag would keep only 75.7\,\% of rows. So the
+168\,h lag stays as a missing value, which LightGBM handles, rather than a filter. By
+03.12 the test set will roughly double.
+
+\textbf{A2 · Spoofing.} \st{Changed (here)} A spoofed aircraft reports a false position,
+often with normal NIC. It can then be put in the wrong cell and does not count as
+degraded, so spoofing mostly causes \emph{missed} labels, not false ones. skyjam predicts
+loss of integrity, and its label cannot see undetected spoofing. This is now stated as a limit.
+
+\textbf{B1 · Readability.} \st{Changed} Primer and a cell-hour example at the top of this
+page. I also wrote this summary in plainer language, as the editors asked.
+
+\textbf{E5 · Full name.} \st{Changed} Full name in the title block of this document.
+
+\end{document}

@@ -16,9 +16,10 @@ history**, which is why a Go service polls the feed continuously from MS1 onward
 | | |
 | --- | --- |
 | Proposal (MS1) | [`docs/proposal.pdf`](docs/proposal.pdf) |
+| MS2 summary | [`docs/ms2_summary.pdf`](docs/ms2_summary.pdf) |
 | Live URL | _by MS4_ |
 | Video pitch | _by MS4_ |
-| Status | MS1 · ingest service deployed on Railway, writing to Postgres; training and inference pipelines are MS3/MS4 |
+| Status | MS2 · hourly capture (Go) and hourly feature build (Python) both run on Railway, writing to Postgres; training and inference are MS3/MS4 |
 
 ## Clone and run
 
@@ -26,7 +27,7 @@ history**, which is why a Go service polls the feed continuously from MS1 onward
 git clone https://github.com/Zayden16/hslu-mlops-hs-26.git
 cd hslu-mlops-hs-26
 uv sync --locked --all-extras        # pinned via uv.lock
-uv run pytest                        # 34 unit tests (7 need TEST_DATABASE_URL, else skipped)
+uv run pytest                        # 43 tests (8 need TEST_DATABASE_URL, else skipped)
 cp .env.example .env
 ```
 
@@ -36,6 +37,17 @@ Reading the feature store needs `DATABASE_URL` pointing at the Postgres instance
 export DATABASE_URL=postgres://...
 uv run python -c "from skyjam.common.db import *; print(slot_coverage(get_engine()).tail())"
 ```
+
+Building the feature store (what the hourly Railway cron runs):
+
+```bash
+export DATABASE_URL=postgres://...
+uv run skyjam-features                 # rebuild cell_hourly_features + log to feature_runs
+uv run skyjam-features --no-store --out features.parquet   # local copy only
+docker build -t skyjam-features . && docker run -e DATABASE_URL skyjam-features
+```
+
+Training reads the table with `skyjam.common.db.read_features(engine)`.
 
 The capture service is Go and lives in [`services/ingestor/`](services/ingestor):
 
@@ -58,7 +70,8 @@ Rebuild the milestone PDFs (needs pandoc, xelatex, npx): `./docs/build.sh`
 
 | Pipeline | Trigger | Responsibility | State |
 | --- | --- | --- | --- |
-| Feature | Go service on Railway, every 30 min | poll 18 ADS-B discs, capture **unfiltered** observations to Postgres | **running** |
+| Ingest | Go service on Railway, hourly (`:00`) | poll 18 ADS-B discs, capture **unfiltered** observations to Postgres `observations` | **running** |
+| Feature | Railway cron `20 * * * *` (Python, root `Dockerfile` + `railway.json`) | raw -> H3 cell-hours -> lags, rolling, neighbour-cell features, 6 h target -> `cell_hourly_features`, audit row in `feature_runs` | **running** |
 | Training | weekly + on drift | read features, chronological split, train vs. two baselines, track in MLflow, register best | MS3 |
 | Inference | hourly batch (Python) | load the Production model, score live cells, write forecasts to Postgres | MS4 |
 | Serving | always on (Go + Astro) | Go JSON API over the forecast table, Astro map frontend | MS4 |
@@ -92,12 +105,21 @@ This was a correction, not just a preference: the previous Parquet layer filtere
 FL200+ and wrote H3 res 3 while the feature store used res 2, which made its documented
 "backfill from immutable raw" guarantee impossible to honour.
 
+**Backfill.** The feed has no history endpoint, so backfill means *recomputing*, not
+re-downloading: every feature run rebuilds the whole table from the immutable raw
+`observations`, so a changed threshold or a new feature is applied to all history at
+once (about 40 s for 3.3 M cruise rows). `skyjam-import-legacy` loaded the pre-Postgres
+Parquet snapshots.
+
 ### The feed is rate-limited
 
 `api.adsb.lol` limits via nginx with no `Retry-After` and no quota headers, and documents
 the limit as *dynamic based on environment load*. Measured: a burst is cut off after 2-3
 requests and recovers after ~15 s. At the original 2 s spacing only 10-12 of 18 discs
 completed per sweep; at 12 s spacing with a 16 s base backoff a sweep returns 18/18.
+On top of that there is a **500 requests/day** per-IP quota: 30-minute sweeps (864
+requests/day) exhausted it every afternoon in October, so sweeps are now hourly
+(see [`docs/ingestion-gaps-2026-10.md`](docs/ingestion-gaps-2026-10.md)).
 
 ## Course requirements
 
@@ -165,6 +187,6 @@ Keep feature definitions in one place shared by training and inference to avoid 
 
 ## Course material
 
-`ilias-dump/` holds the ILIAS export: project presentation and guidelines (proposal, repository, milestone summary, review) plus the lecture decks (MLOps intro, infrastructure, model registry/MLflow, processing & prediction modes, stream processing, FTI architecture, data drift, feature stores).
+`ilias-dump/` (local only, gitignored and not redistributed) holds the ILIAS course export.
 
 Lecturers: Marc Bravin (module head), Florian Bär, Tobias Mérinat, Josiah Rohrer. Thursdays 09:05–11:25, Rotkreuz S1A_209.
