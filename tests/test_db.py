@@ -190,3 +190,23 @@ def test_timestamps_are_utc_aware(engine):
     got = read_observations(engine)
     assert isinstance(got["slot_start"].dtype, pd.DatetimeTZDtype)
     assert got["slot_start"].iloc[0] == slot
+
+
+def test_feature_store_roundtrip_replaces_previous_build(engine):
+    from skyjam.common.db import FEATURE_VERSION, read_features, write_features
+
+    slots = pd.date_range("2026-10-01", periods=3, freq="h", tz="UTC")
+    feats = pd.DataFrame(
+        {"h3_cell": "x", "slot_start": slots, "degraded_share": [0.1, 0.2, 0.3],
+         "target_is_degraded": [0, 1, 0]}
+    )
+    write_features(engine, feats, run_id="r1", cell_slots=3)
+    write_features(engine, feats.iloc[:2], run_id="r2", cell_slots=2)
+
+    stored = read_features(engine)
+    assert len(stored) == 2, "a rebuild replaces the table instead of appending"
+    assert set(stored["feature_run_id"]) == {"r2"}
+    assert set(stored["feature_version"]) == {FEATURE_VERSION}
+    with engine.begin() as conn:
+        runs = conn.execute(text("SELECT run_id FROM feature_runs ORDER BY run_id")).all()
+    assert [r[0] for r in runs] == ["r1", "r2"], "every build is recorded"

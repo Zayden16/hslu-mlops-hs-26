@@ -174,3 +174,95 @@ def slot_coverage(engine: Engine) -> pd.DataFrame:
     if not frame.empty:
         frame["slot_start"] = pd.to_datetime(frame["slot_start"], utc=True)
     return frame
+
+
+# --- Feature store write path ------------------------------------------------
+
+# Bumped whenever a feature definition or threshold in schema.py changes, so a
+# training run can name exactly which feature semantics it was trained on.
+FEATURE_VERSION = "v2-neighbours"
+
+FEATURE_TABLE = "cell_hourly_features"
+FEATURE_RUNS_TABLE = "feature_runs"
+
+FEATURE_RUNS_DDL = f"""
+CREATE TABLE IF NOT EXISTS {FEATURE_RUNS_TABLE} (
+    run_id           TEXT PRIMARY KEY,
+    feature_version  TEXT NOT NULL,
+    built_at         TIMESTAMPTZ NOT NULL,
+    first_slot       TIMESTAMPTZ,
+    last_slot        TIMESTAMPTZ,
+    cell_slots       INT NOT NULL,
+    labelled_rows    INT NOT NULL,
+    positive_rate    DOUBLE PRECISION,
+    status           TEXT NOT NULL
+)
+"""
+
+
+def write_features(
+    engine: Engine,
+    features: pd.DataFrame,
+    run_id: str,
+    cell_slots: int,
+) -> None:
+    """Replace the materialised feature table and record the build.
+
+    The feature table is a pure function of the raw observations and
+    `schema.py`, so every run rebuilds it from the full history instead of
+    appending. Writing into a staging table and swapping it in one
+    transaction means a reader never sees a half-written table, and a
+    failed build leaves the previous version in place.
+    """
+    from datetime import UTC
+    from datetime import datetime as dt
+
+    staging = f"{FEATURE_TABLE}_staging"
+    out = features.copy()
+    out["feature_version"] = FEATURE_VERSION
+    out["feature_run_id"] = run_id
+
+    with engine.begin() as conn:
+        conn.execute(text(FEATURE_RUNS_DDL))
+        conn.execute(text(f"DROP TABLE IF EXISTS {staging}"))
+    # Postgres caps a statement at 65535 bind parameters; size chunks by width.
+    chunk = max(1, 60_000 // max(1, len(out.columns)))
+    out.to_sql(staging, engine, index=False, chunksize=chunk, method="multi")
+    with engine.begin() as conn:
+        conn.execute(text(f"DROP TABLE IF EXISTS {FEATURE_TABLE}"))
+        conn.execute(text(f"ALTER TABLE {staging} RENAME TO {FEATURE_TABLE}"))
+        conn.execute(
+            text(
+                f"CREATE INDEX IF NOT EXISTS {FEATURE_TABLE}_slot_idx "
+                f"ON {FEATURE_TABLE} (slot_start)"
+            )
+        )
+        conn.execute(
+            text(
+                f"""
+                INSERT INTO {FEATURE_RUNS_TABLE}
+                (run_id, feature_version, built_at, first_slot, last_slot,
+                 cell_slots, labelled_rows, positive_rate, status)
+                VALUES (:run_id, :v, :built_at, :first, :last, :cells, :rows,
+                        :pos, 'succeeded')
+                """
+            ),
+            {
+                "run_id": run_id,
+                "v": FEATURE_VERSION,
+                "built_at": dt.now(UTC),
+                "first": out["slot_start"].min() if len(out) else None,
+                "last": out["slot_start"].max() if len(out) else None,
+                "cells": cell_slots,
+                "rows": len(out),
+                "pos": float(out["target_is_degraded"].mean()) if len(out) else None,
+            },
+        )
+
+
+def read_features(engine: Engine) -> pd.DataFrame:
+    """Read the materialised feature table, the entry point for training."""
+    frame = pd.read_sql(text(f"SELECT * FROM {FEATURE_TABLE}"), engine)  # noqa: S608
+    if not frame.empty:
+        frame["slot_start"] = pd.to_datetime(frame["slot_start"], utc=True)
+    return frame

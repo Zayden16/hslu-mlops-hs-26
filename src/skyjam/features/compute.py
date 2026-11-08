@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import logging
 
+import h3
 import pandas as pd
 
 from skyjam.common.schema import (
@@ -46,6 +47,41 @@ def _regular_hourly_index(frame: pd.DataFrame) -> pd.DataFrame:
         frame.set_index(["h3_cell", "slot_start"])
         .reindex(index)
         .reset_index()
+    )
+
+
+NEIGHBOUR_LAG_HOURS: tuple[int, ...] = (1, 3, 6)
+
+
+def _neighbour_state(frame: pd.DataFrame) -> pd.DataFrame:
+    """Same-slot state of the six adjacent H3 cells (ring 1).
+
+    Interference regions grow and shrink as a whole (MS1 review A3 / E1), so a
+    cell's neighbours carry the onset before the cell itself flips. Only
+    neighbours observed in the same slot contribute: an unobserved neighbour
+    is unknown, never counted as clean. Values at slot *t* use slot *t* only,
+    so the result obeys the same leakage rule as the per-cell columns.
+    """
+    observed = frame.loc[
+        frame["degraded_share"].notna(),
+        ["h3_cell", "slot_start", "degraded_share", LABEL_COLUMN],
+    ]
+    pairs = pd.DataFrame(
+        [
+            (cell, nbr)
+            for cell in frame["h3_cell"].unique()
+            for nbr in h3.grid_ring(cell, 1)
+        ],
+        columns=["h3_cell", "nbr_cell"],
+    )
+    joined = pairs.merge(
+        observed.rename(columns={"h3_cell": "nbr_cell"}), on="nbr_cell"
+    )
+    return joined.groupby(["h3_cell", "slot_start"], as_index=False).agg(
+        nbr_observed=("nbr_cell", "size"),
+        nbr_degraded_share_mean=("degraded_share", "mean"),
+        nbr_degraded_share_max=("degraded_share", "max"),
+        nbr_degraded_count=(LABEL_COLUMN, "sum"),
     )
 
 
@@ -87,6 +123,20 @@ def build_features(cells: pd.DataFrame) -> pd.DataFrame:
         lambda s: s.shift(1).rolling(24, min_periods=1).mean()
     )
 
+    # --- Neighbour-cell context, same slot plus lags on the regular grid ---
+    frame = frame.merge(_neighbour_state(frame), on=["h3_cell", "slot_start"], how="left")
+    frame["nbr_observed"] = frame["nbr_observed"].fillna(0)
+    frame = frame.sort_values(["h3_cell", "slot_start"]).reset_index(drop=True)
+    grouped = frame.groupby("h3_cell", sort=False)
+    for lag in NEIGHBOUR_LAG_HOURS:
+        frame[f"nbr_degraded_share_mean_lag_{lag}h"] = grouped[
+            "nbr_degraded_share_mean"
+        ].shift(lag)
+    # Spreading front: neighbours getting worse while the cell is still clean.
+    frame["nbr_degraded_share_delta_3h"] = (
+        frame["nbr_degraded_share_mean"] - frame["nbr_degraded_share_mean_lag_3h"]
+    )
+
     # --- Calendar features: interference has a strong daily rhythm ---
     frame["hour_utc"] = frame["slot_start"].dt.hour
     frame["day_of_week"] = frame["slot_start"].dt.dayofweek
@@ -113,16 +163,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build the modelling table.")
     parser.add_argument(
         "--out",
-        help="optional Parquet path to write the table to; otherwise only summarised",
+        help="optional Parquet path to also write the table to",
+    )
+    parser.add_argument(
+        "--no-store",
+        action="store_true",
+        help="build and summarise only, do not write the feature store table",
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
     # Imported here so `build_features` stays importable, and unit-testable,
     # without a database or a configured DATABASE_URL.
-    from skyjam.common.db import get_engine, read_cell_hourly
+    from datetime import UTC, datetime
 
-    cells = read_cell_hourly(get_engine())
+    from skyjam.common.db import get_engine, read_cell_hourly, write_features
+
+    engine = get_engine()
+    cells = read_cell_hourly(engine)
     if cells.empty:
         logger.error("no observations in the feature store; is the ingest service running?")
         return
@@ -144,6 +202,11 @@ def main() -> None:
         features[TARGET_COLUMN].mean(),
         list(BASE_COLUMNS),
     )
+
+    if not args.no_store:
+        run_id = datetime.now(UTC).strftime("features-%Y%m%dT%H%M%SZ")
+        write_features(engine, features, run_id=run_id, cell_slots=len(cells))
+        logger.info("feature store updated, run %s", run_id)
 
     if args.out:
         features.to_parquet(args.out, index=False)
