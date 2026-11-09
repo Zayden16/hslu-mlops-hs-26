@@ -93,7 +93,7 @@ environment load". Hourly sweeps stay under the quota either way.
   service in `hslu-mlops-26` / `production` (redeployed 2026-10-27 13:55 UTC).
 - Code default changed from 30m to 60m in `services/ingestor/main.go`, and the
   README config table updated with a warning not to go below 60m (commit
-  `0a5107d`).
+  `168b31a`).
 
 ## Follow-ups
 
@@ -102,8 +102,9 @@ environment load". Hourly sweeps stay under the quota either way.
   missing slots instead of treating them as zero traffic.
 - **Verify:** on 2026-10-28, check that 2026-10-27 14:00-23:00 has data. Part of
   today's quota had already been used before the fix.
-- **Bug:** use a separate short timeout for the final `UpsertRun`, so a
-  timed-out sweep is still recorded as `failed` and not left as `running`.
+- **Bug (fixed 2026-11-08, `2f2b658`):** the final writes now use a separate
+  short timeout, so a timed-out sweep is recorded as `failed`. Migration
+  `002_close_stale_runs.sql` marked the 112 stuck rows `abandoned`.
 - **Robustness:** read `x-ratelimit-remaining` and stop retrying once the daily
   quota is used up, instead of spending 20 minutes on certain failures.
 - **Monitoring:** alert when the latest complete slot falls more than 2 hours
