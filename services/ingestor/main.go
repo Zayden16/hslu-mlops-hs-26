@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/Zayden16/hslu-mlops-hs-26/services/ingestor/internal/adsb"
 	"github.com/Zayden16/hslu-mlops-hs-26/services/ingestor/internal/grid"
 	"github.com/Zayden16/hslu-mlops-hs-26/services/ingestor/internal/ingest"
+	"github.com/Zayden16/hslu-mlops-hs-26/services/ingestor/internal/notify"
 	"github.com/Zayden16/hslu-mlops-hs-26/services/ingestor/internal/store"
 )
 
@@ -44,6 +46,8 @@ type config struct {
 	Port        string
 	RunOnce     bool
 	SkipMigrate bool
+	NtfyURL     string
+	NtfyToken   string
 }
 
 func loadConfig() (config, error) {
@@ -54,6 +58,9 @@ func loadConfig() (config, error) {
 		Port:        env("PORT", "8080"),
 		RunOnce:     env("SKYJAM_RUN_ONCE", "") == "true",
 		SkipMigrate: env("SKYJAM_SKIP_MIGRATE", "") == "true",
+		// Full topic URL, e.g. https://ntfy.sh/<secret-topic>. Unset = no alerts.
+		NtfyURL:   env("SKYJAM_NTFY_URL", ""),
+		NtfyToken: env("SKYJAM_NTFY_TOKEN", ""),
 	}
 	if c.DatabaseURL == "" {
 		return c, errors.New("DATABASE_URL is required (Railway injects it when the service is linked to Postgres)")
@@ -173,7 +180,7 @@ func run(logger *slog.Logger) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		loop(ctx, ing, cfg.Interval, logger)
+		loop(ctx, ing, cfg.Interval, logger, notify.New(cfg.NtfyURL, cfg.NtfyToken))
 	}()
 
 	<-ctx.Done()
@@ -192,9 +199,10 @@ func run(logger *slog.Logger) error {
 // Alignment matters: sweeps drifting slowly through the hour would cluster
 // near a slot boundary and occasionally straddle it, so an hour could receive
 // two sweeps or none. Anchoring to real time keeps roughly even coverage.
-func loop(ctx context.Context, ing *ingest.Ingestor, interval time.Duration, logger *slog.Logger) {
+func loop(ctx context.Context, ing *ingest.Ingestor, interval time.Duration, logger *slog.Logger, n *notify.Notifier) {
+	alerts := &sweepAlerter{n: n, logger: logger}
 	// Sweep at once on boot, so a redeploy does not skip a slot.
-	sweep(ctx, ing, logger)
+	alerts.observe(ctx, sweep(ctx, ing, logger))
 
 	for {
 		wait := time.Until(time.Now().Add(interval).Truncate(interval))
@@ -205,24 +213,84 @@ func loop(ctx context.Context, ing *ingest.Ingestor, interval time.Duration, log
 		case <-ctx.Done():
 			return
 		case <-time.After(wait):
-			sweep(ctx, ing, logger)
+			alerts.observe(ctx, sweep(ctx, ing, logger))
 		}
 	}
 }
 
-func sweep(ctx context.Context, ing *ingest.Ingestor, logger *slog.Logger) {
-	if ctx.Err() != nil {
+// sweepOutcome is what the alerter needs from one sweep.
+type sweepOutcome struct {
+	Slot      time.Time
+	Succeeded int
+	Attempted int
+	Err       error
+}
+
+func (o sweepOutcome) healthy() bool { return o.Err == nil && o.Succeeded == o.Attempted }
+
+// sweepAlerter sends an ntfy alert when sweeps go from healthy to degraded and
+// once more on recovery. It deliberately does not repeat every hour during a
+// long outage (the quota incident lasted ten hours a day), but it does
+// escalate if a single sweep captured nothing at all.
+type sweepAlerter struct {
+	n        *notify.Notifier
+	logger   *slog.Logger
+	degraded bool
+	since    time.Time
+}
+
+func (a *sweepAlerter) observe(ctx context.Context, o sweepOutcome) {
+	slot := o.Slot.UTC().Format("2006-01-02 15:04")
+	switch {
+	case !o.healthy() && !a.degraded:
+		a.degraded, a.since = true, o.Slot
+		prio := "high"
+		if o.Succeeded == 0 {
+			prio = "urgent" // nothing captured: this hour is permanently lost
+		}
+		body := fmt.Sprintf("Slot %s UTC: %d/%d discs OK.", slot, o.Succeeded, o.Attempted)
+		if o.Err != nil {
+			body += " Error: " + o.Err.Error()
+		}
+		a.send(ctx, "skyjam ingest degraded", body, prio, "warning,satellite")
+	case o.healthy() && a.degraded:
+		a.degraded = false
+		body := fmt.Sprintf("Slot %s UTC: %d/%d discs OK again (degraded since %s UTC).",
+			slot, o.Succeeded, o.Attempted, a.since.UTC().Format("2006-01-02 15:04"))
+		a.send(ctx, "skyjam ingest recovered", body, "default", "white_check_mark")
+	}
+}
+
+func (a *sweepAlerter) send(ctx context.Context, title, body, prio, tags string) {
+	if !a.n.Enabled() {
 		return
+	}
+	// Detached from shutdown so an alert raised during a SIGTERM still goes out.
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	if err := a.n.Send(sendCtx, title, body, prio, strings.Split(tags, ",")...); err != nil {
+		a.logger.Error("alert not delivered", "err", err)
+	}
+}
+
+func sweep(ctx context.Context, ing *ingest.Ingestor, logger *slog.Logger) sweepOutcome {
+	if ctx.Err() != nil {
+		return sweepOutcome{Slot: time.Now(), Attempted: len(ing.Points), Succeeded: len(ing.Points)}
 	}
 	// A hung sweep must not block the next one indefinitely.
 	sweepCtx, cancel := context.WithTimeout(ctx, 20*time.Minute)
 	defer cancel()
 
-	if _, err := ing.RunOnce(sweepCtx); err != nil {
+	res, err := ing.RunOnce(sweepCtx)
+	if err != nil {
 		// Never fatal: the next tick is another chance, and exiting would
 		// lose every subsequent hour.
 		logger.Error("sweep failed", "err", err)
 	}
+	if res.SlotStart.IsZero() {
+		res.SlotStart = ingest.SlotStart(time.Now())
+	}
+	return sweepOutcome{Slot: res.SlotStart, Succeeded: res.Succeeded, Attempted: res.Attempted, Err: err}
 }
 
 // healthServer exposes liveness and, more usefully, how much history exists.

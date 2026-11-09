@@ -204,13 +204,47 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
+    from skyjam.common import alerts
+
+    try:
+        _run(args)
+    except SystemExit as exc:
+        if exc.code not in (0, None):
+            alerts.send(
+                "skyjam features FAILED",
+                "The hourly feature build exited with an error; the previous "
+                "feature table is still in place. Check: railway logs -s features",
+                priority="high",
+                tags="rotating_light",
+            )
+        raise
+    except Exception as exc:
+        alerts.send(
+            "skyjam features CRASHED",
+            f"{type(exc).__name__}: {exc}",
+            priority="high",
+            tags="rotating_light",
+        )
+        raise
+
+
+def _run(args: argparse.Namespace) -> None:
     # Imported here so `build_features` stays importable, and unit-testable,
     # without a database or a configured DATABASE_URL.
     from datetime import UTC, datetime
 
+    from skyjam.common import alerts
     from skyjam.common.db import get_engine, read_cell_hourly, write_features
 
     engine = get_engine()
+
+    # Watchdog for the ingestor, which cannot report its own death. Runs before
+    # the build and does not stop it: stale features are still valid features.
+    stale = alerts.check_capture(engine)
+    if stale:
+        logger.error("capture watchdog: %s", stale)
+        alerts.send("skyjam capture STALE", stale, priority="urgent", tags="warning,satellite")
+
     cells = read_cell_hourly(engine)
     if cells.empty:
         logger.error("no observations in the feature store; is the ingest service running?")

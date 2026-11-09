@@ -193,7 +193,17 @@ def test_timestamps_are_utc_aware(engine):
 
 
 def test_feature_store_roundtrip_replaces_previous_build(engine):
-    from skyjam.common.db import FEATURE_VERSION, read_features, write_features
+    from skyjam.common.db import (
+        FEATURE_RUNS_DDL,
+        FEATURE_VERSION,
+        read_features,
+        write_features,
+    )
+
+    # Re-runnable against a persistent local database, not just fresh CI.
+    with engine.begin() as conn:
+        conn.execute(text(FEATURE_RUNS_DDL))
+        conn.execute(text("TRUNCATE feature_runs"))
 
     slots = pd.date_range("2026-10-01", periods=3, freq="h", tz="UTC")
     feats = pd.DataFrame(

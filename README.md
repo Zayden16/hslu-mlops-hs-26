@@ -122,6 +122,23 @@ re-downloading: every feature run rebuilds the whole table from the immutable ra
 once (about 40 s for 3.3 M cruise rows). `skyjam-import-legacy` loaded the pre-Postgres
 Parquet snapshots.
 
+### Alerting (ntfy)
+
+Both services push to an ntfy topic set in `SKYJAM_NTFY_URL` (a Railway variable, never
+committed). Subscribe to the topic in the ntfy app to get phone notifications.
+
+| Alert | Sent by | When | Priority |
+| --- | --- | --- | --- |
+| `skyjam ingest degraded` | ingestor | first sweep with fewer than 18/18 discs or a failed write | high, **urgent** if 0/18 |
+| `skyjam ingest recovered` | ingestor | first fully healthy sweep after that | default |
+| `skyjam capture STALE` | features cron | newest captured hour older than 2 h (ingestor down or stuck) | urgent |
+| `skyjam features FAILED` / `CRASHED` | features cron | build exits non-zero or raises (previous table kept) | high |
+
+The ingestor alerts only on a state change, so a ten-hour outage gives one alert and one
+recovery, not ten. The features cron runs in a separate container and acts as a watchdog
+for the ingestor, which cannot report its own death. It repeats every hour while capture
+stays stale.
+
 ### The feed is rate-limited
 
 `api.adsb.lol` limits via nginx with no `Retry-After` and no quota headers, and documents
